@@ -9,7 +9,7 @@ Take the keyboard off a detachable and Omarchy turns into a tablet. The screen f
 | | Keyboard detached (or toggled on) | Keyboard attached (or toggled off) |
 |---|---|---|
 | Rotation | Follows the accelerometer, touchscreen and pen included | Landscape |
-| On-screen keyboard | Shown ([wvkbd](https://git.sr.ht/~proycon/wvkbd), themed to match) | Hidden |
+| On-screen keyboard | Shown: a US desktop layout ([wvkbd](https://git.sr.ht/~proycon/wvkbd), themed to match), plus a floating ⌨ button to show or hide it | Hidden |
 | Touch tweaks | Wider gaps; borders easier to grab | Hyprland's own values back |
 | Notification | "Tablet mode" | "Laptop mode" |
 
@@ -27,7 +27,7 @@ The plugin isn't published yet. For now it's installed as a local folder at `~/.
 
 Then click the dimmed laptop icon in the bar. The card walks you through setup:
 
-1. **Set up** opens a terminal and asks for your password. It installs `iio-sensor-proxy` from the Arch repos. Then it downloads wvkbd's AUR build recipe, shows you the whole PKGBUILD, and asks before building. What you read is exactly what gets built, and makepkg checks the upstream source's checksum.
+1. **Set up** opens a terminal and asks for your password. It installs `iio-sensor-proxy` from the Arch repos. Then it builds the on-screen keyboard: wvkbd 0.20 from upstream, with a US desktop layout. That's upstream's desktop layout with the Compose key moved off the home row (see `packaging/wvkbd-deskus`). It shows you the complete recipe first and asks before building. What you read is exactly what gets built, and makepkg checks the upstream source's checksum.
 2. **Finish setup** starts the service, adds the menu entries and installs a theme hook.
 3. **Calibrate** once (on the card, or `tablet-mode calibrate`). It needs two poses, and you confirm the picture is the right way up.
 
@@ -79,7 +79,7 @@ If the service crashes or is killed, its `ExecStopPost` runs `tablet-mode restor
 | `orientation_offset`, `orientation_mirror` | `0`, `false` | Set by `calibrate` |
 | `debounce_ms` | `400` | How long an orientation must hold before the screen turns |
 | `gaps_in`, `gaps_out`, `border_grab` | `8`, `14`, `30` | Touch tweaks, in pixels |
-| `osk_height_landscape`, `osk_height_portrait` | `300`, `420` | On-screen keyboard height |
+| `osk_height_landscape`, `osk_height_portrait` | `420`, `420` | On-screen keyboard height (the same in both, so keys are as tall in landscape as in portrait) |
 
 After editing, run `systemctl --user restart omarchy-tablet-mode`.
 
@@ -89,6 +89,14 @@ After editing, run `systemctl --user restart omarchy-tablet-mode`.
 
 ## Good to know
 
+- **The on-screen keyboard layout** is a regular US keyboard:
+  - top row: Esc, F1–F12, Del;
+  - number row: `` ` `` 1–0 - = Backspace;
+  - Tab on the left, Caps Lock starting the home row, Enter at its right end;
+  - arrow keys as an inverted T in the bottom-right corner.
+
+  A held key stays down until you lift your finger, even if it drifts a little, so holding F9 for Voxtype dictation works. The ⌨ key at the bottom left switches to a symbols page. There's no Compose key, so accented letters need the physical keyboard.
+- **Showing and hiding it:** in tablet mode a round ⌨ button floats in the bottom-right corner. Tap it to show the keyboard; it then sits just above the keyboard, and tapping it again hides it.
 - **The on-screen keyboard doesn't pop up when you tap a text field.** That would need wvkbd's input-method mode, which competes with fcitx5 (Omarchy's input method). It appears in tablet mode, and the card, the menu and `tablet-mode osk toggle` show or hide it.
 - **Typing on it into the Omarchy menu or a bar popup closes them.** This is an Omarchy bug, tracked in [omacom/omarchy#9029](https://github.com/omacom/omarchy/issues/9029) and [#9756](https://github.com/omacom/omarchy/issues/9756). Normal app windows are fine.
 - **Suspend:** before every sleep the service lets go of the accelerometer and closes the on-screen keyboard, using a logind delay lock, and brings them back about 2 seconds after resume. An early version without this hung the Z13 once when suspending in tablet mode. With it, tablet-mode suspends of 80-95 seconds resumed cleanly (see `to-do.md`).

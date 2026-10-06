@@ -14,6 +14,7 @@ An Omarchy 4 shell plugin (bar card) plus a CLI and user service that give detac
 | `systemd/omarchy-tablet-mode.service` | Template; `enable` swaps `@BIN@` for the script's path. `ExecCondition=… enabled`, `ExecStopPost=… restore --quiet` |
 | `test/run.sh` + `test/fixtures/` | Dry-run suite (`TABLET_MODE_DRYRUN=1`): fake hyprctl JSON, actions logged instead of done |
 | `scripts/suspend-test.sh` | Diagnostic for the suspend hang: one scenario per run (`sensor`, `detached`, `detached-sensor`, `osk`; `--rehearse` = `pm_test=devices`), with the plugin off and pm_trace on. It leaves a breadcrumb that survives a hard reset; `report` reads it after a reboot |
+| `packaging/wvkbd-deskus/` | PKGBUILD and 3-line layout patch for the US desktop on-screen keyboard (deployed with the plugin so `install` can build it) |
 | `scripts/deploy.sh` | Copies the runtime files (`manifest.json`, `Widget.qml`, `bin/`, `systemd/`, `README.md`, `LICENSE`) into `~/.config/omarchy/plugins/alanroman117.tablet-mode/`, removes anything else there, refreshes an installed unit and restarts the service |
 
 This repo (`~/Github/my-projects/omarchy-tablet-mode-asus-rog-flow-z13`) is the source of truth. Edit here, run `test/run.sh`, then `scripts/deploy.sh`. Never edit the plugin folder directly: deploy overwrites it.
@@ -37,6 +38,13 @@ This repo (`~/Github/my-projects/omarchy-tablet-mode-asus-rog-flow-z13`) is the 
 - **The menu file is the user's.** `menu_remove` only acts on an intact block (one begin marker before one end marker), and `menu_add` never edits the user's lines: a missing comma goes inside our block as a lone `,`. Every result must pass `jsonc_ok` (string-aware) or nothing is written.
 - **AUR builds come from a reviewed checkout.** `aur_install_reviewed` clones, shows the full PKGBUILD, asks, then runs `makepkg` in that same checkout. Never `--noconfirm`, and never a separate download for display.
 - **Every reader started with `start_reader X` needs an `_X-reader)` dispatch line.** One was missing once, and the dry-run tests can't see it; `test/run.sh` now checks this statically.
+- **`Widget.qml` changes need `omarchy restart shell`.** The shell doesn't reload an already-loaded bar widget when its file is replaced, so it keeps running the old code with no error. `scripts/deploy.sh` restarts the shell when `Widget.qml` changed. Quickshell's `console.log` doesn't reach the journal, but `console.warn` does.
+- **The on-screen keyboard is `wvkbd-deskus`**, a US desktop layout built from `packaging/wvkbd-deskus`. That's upstream 0.20 (the checksum pinned to match the AUR package) plus two patches:
+  - `deskus-layout.patch` removes the Compose key from the home row and widens Caps and Enter to 1.75.
+  - `hold-until-release.patch` (pkgrel 2) stops upstream's release-on-any-finger-motion in `kbd_motion_key`, so a held key (Voxtype's hold-to-talk F9) stays down until the finger lifts. Key-down is still sent at touch-down, so typing is unchanged.
+
+  `osk_outdated` compares the installed version with the recipe's `pkgver-pkgrel`; `install` rebuilds the keyboard when it's older, and `doctor` says so. `osk_bin` falls back to `wvkbd-mobintl`, and either one counts as set up. `tablet-mode install` builds deskus through `build_reviewed`: copy the recipe, show every file, ask, then run `makepkg` in that same copy.
+- **Floating keyboard button:** a `PanelWindow` in `Widget.qml` (namespace `tablet-mode-keyboard-button`), shown only in tablet mode, and only by the bar instance on the built-in display. It uses `ExclusionMode.Normal`, so wvkbd's exclusive zone pushes it up to sit above the keyboard.
 - **wvkbd never gets `--auto`.** Its input-method mode would compete with fcitx5.
 - Tests must not write inside the plugin folder: the shell hot-reloads the plugin on every file change. `test/run.sh` uses `mktemp -d`.
 

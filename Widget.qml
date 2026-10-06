@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 
@@ -26,6 +27,13 @@ Panel {
   readonly property bool ready: setup === "ready"
   readonly property bool tablet: ready && info.mode === "tablet"
   readonly property var rotations: ["normal", "90", "180", "270"]
+
+  // The bar makes one widget per monitor; only the one on the built-in display shows the
+  // floating keyboard button.
+  readonly property var barScreen: button.QsWindow.window ? button.QsWindow.window.screen : null
+  readonly property bool onInternalScreen: barScreen !== null && /^(eDP|LVDS|DSI)/.test(String(barScreen.name || ""))
+  readonly property string keyboardGlyph: "\udb80\udf0c"
+  readonly property string keyboardCloseGlyph: "\udb80\udf0f"
 
   readonly property string tabletGlyph: "󰓶"
   readonly property string laptopGlyph: "󰌢"
@@ -161,6 +169,48 @@ Panel {
     running: true
     repeat: true
     onTriggered: root.refresh()
+  }
+
+  // Floating keyboard button, in tablet mode only: one tap shows the on-screen keyboard,
+  // another hides it. It keeps out of other surfaces' exclusive zones, so while the keyboard
+  // is up it sits just above it, within thumb reach either way.
+  PanelWindow {
+    id: oskButton
+    screen: root.barScreen
+    visible: root.tablet && root.onInternalScreen
+    anchors { bottom: true; right: true }
+    margins { bottom: Style.space(18); right: Style.space(18) }
+    implicitWidth: Style.space(64)
+    implicitHeight: Style.space(64)
+    color: "transparent"
+    WlrLayershell.namespace: "tablet-mode-keyboard-button"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+    exclusionMode: ExclusionMode.Normal
+
+    Rectangle {
+      anchors.fill: parent
+      radius: width / 2
+      color: Color.background
+      border.width: Math.max(1, Style.normalBorderWidth)
+      border.color: Color.accent
+      opacity: oskTap.pressed ? 0.75 : 0.95
+
+      Text {
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: root.info.osk ? root.keyboardCloseGlyph : root.keyboardGlyph
+        color: Color.foreground
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.display
+      }
+
+      MouseArea {
+        id: oskTap
+        anchors.fill: parent
+        onClicked: root.runAction("osk", ["osk", "toggle"])
+      }
+    }
   }
 
   BarIconButton {

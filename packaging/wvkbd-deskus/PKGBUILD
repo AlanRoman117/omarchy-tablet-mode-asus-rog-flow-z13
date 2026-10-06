@@ -1,0 +1,44 @@
+# Maintainer: Alan Roman
+#
+# wvkbd with a US desktop layout, for the omarchy-tablet-mode plugin. Upstream's
+# deskintl layout (the same 0.20 release the AUR wvkbd package builds, same
+# checksum) with one change: the Compose key is taken off the home row, so Caps
+# Lock starts it like on a real keyboard (deskus-layout.patch, three lines), and
+# a held key stays down until the finger lifts instead of letting go on the
+# slightest movement, so hold-to-talk keys work (hold-until-release.patch).
+# Installs only /usr/bin/wvkbd-deskus, so it sits beside the AUR wvkbd package.
+
+pkgname=wvkbd-deskus
+pkgver=0.20
+pkgrel=2
+pkgdesc='On-screen keyboard for wlroots, US desktop layout (for omarchy-tablet-mode)'
+url='https://git.sr.ht/~proycon/wvkbd'
+arch=('x86_64' 'aarch64')
+license=('GPL-3.0-or-later')
+depends=('wayland' 'pango' 'cairo' 'glibc' 'libxkbcommon')
+makedepends=('fontconfig')
+options=('!debug')
+source=("wvkbd-$pkgver.tar.gz::https://git.sr.ht/~proycon/wvkbd/archive/v$pkgver.tar.gz"
+        'deskus-layout.patch'
+        'hold-until-release.patch')
+sha512sums=('1c5204dc00f7a3bdfd199dfa88b513c46249b7832ba546c0554940539fcc4e0d55303a9f6edd17dd82fd2893b602b86395202311b3ec851f5e8f41895f682371'
+            '82b018ee68e395ecca9550b8f393b886d0b17082e386aea1ecbea6642e2d04a8eefff2ad69fa221241218bb69f25e434bc715f9fae0cd2cc2a5e1fbffa24b147'
+            'c6a70546879e83c65d9174cca377f5f7ad2c845a0c055206dd9b1a1f2ca73255ff270bb76202c8ee9094d4b64f3490d27b8b5c190697d63722755feda4e0c7a9')
+
+prepare() {
+  cd "wvkbd-v$pkgver"
+  cp layout.deskintl.h layout.deskus.h
+  cp keymap.deskintl.h keymap.deskus.h
+  cp config.deskintl.h config.deskus.h
+  patch layout.deskus.h <"$srcdir/deskus-layout.patch"
+  patch keyboard.c <"$srcdir/hold-until-release.patch"
+}
+
+build() {
+  make -C "wvkbd-v$pkgver" LAYOUT=deskus wvkbd-deskus
+}
+
+package() {
+  install -Dm755 "wvkbd-v$pkgver/wvkbd-deskus" "$pkgdir/usr/bin/wvkbd-deskus"
+  install -Dm644 "wvkbd-v$pkgver/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

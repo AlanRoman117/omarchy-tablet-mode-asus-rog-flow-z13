@@ -121,8 +121,9 @@ claim_sensor() {
 }
 
 show_osk() {
-  command -v wvkbd-mobintl >/dev/null || die "wvkbd isn't installed"
-  spawn_group "$STATE_DIR/wvkbd.pid" wvkbd-mobintl >/dev/null 2>&1 || die "wvkbd didn't start"
+  local bin
+  bin=$(command -v wvkbd-deskus || command -v wvkbd-mobintl) || die "wvkbd isn't installed"
+  spawn_group "$STATE_DIR/wvkbd.pid" "$bin" >/dev/null 2>&1 || die "wvkbd didn't start"
   PIDS+=("$(<"$STATE_DIR/wvkbd.pid")")
   sleep 0.5
   kill -0 "${PIDS[-1]}" 2>/dev/null && ok "On-screen keyboard shown" || die "wvkbd didn't start"
@@ -133,7 +134,7 @@ show_osk() {
 wait_for_tablet_mode() {
   for _ in $(seq 40); do
     if tablet-mode status --is tablet && pgrep -x monitor-sensor >/dev/null; then
-      ok "Tablet mode: accelerometer claimed$(pgrep -x wvkbd-mobintl >/dev/null && echo ", on-screen keyboard up")"
+      ok "Tablet mode: accelerometer claimed$(pgrep -f '^wvkbd-' >/dev/null && echo ", on-screen keyboard up")"
       return 0
     fi
     sleep 0.25
@@ -150,7 +151,7 @@ write_breadcrumb() {
     echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
     echo "keyboard=$(keyboard_state)"
     echo "monitor_sensor=$(pgrep -x monitor-sensor >/dev/null && echo running || echo no)"
-    echo "wvkbd=$(pgrep -x wvkbd-mobintl >/dev/null && echo running || echo no)"
+    echo "wvkbd=$(pgrep -f '^wvkbd-' >/dev/null && echo running || echo no)"
     echo "tablet_mode_service=$(systemctl --user is-active omarchy-tablet-mode 2>/dev/null)"
     echo "kernel=$(uname -r)"
     echo "status=suspending"

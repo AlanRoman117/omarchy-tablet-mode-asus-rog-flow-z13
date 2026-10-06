@@ -1,0 +1,21 @@
+--- layout.deskintl.h
++++ layout.deskus.h
+@@ -194,8 +194,7 @@
+   {"\\", "|", 1.0, Code, KEY_BACKSLASH},
+   {"", "", 0.0, EndRow},
+ 
+-  {"Cmp", "Cmp", 1.0, Compose, .scheme = 1},
+-  {"Caps", "Caps", 1.0, Mod, CapsLock, .scheme = 1},
++  {"Caps", "Caps", 1.75, Mod, CapsLock, .scheme = 1},
+   {"a", "A", 1.0, Code, KEY_A, &layouts[ComposeA]},
+   {"s", "S", 1.0, Code, KEY_S, &layouts[ComposeS]},
+   {"d", "D", 1.0, Code, KEY_D, &layouts[ComposeD]},
+@@ -207,7 +206,7 @@
+   {"l", "L", 1.0, Code, KEY_L, &layouts[ComposeL]},
+   {";", ":", 1.0, Code, KEY_SEMICOLON},
+   {"'", "''", 1.0, Code, KEY_APOSTROPHE, &layouts[ComposeBracket]},
+-  {"Enter", "Enter", 1.5, Code, KEY_ENTER, .scheme = 1},
++  {"Enter", "Enter", 1.75, Code, KEY_ENTER, .scheme = 1},
+   {"", "", 0.0, EndRow},
+ 
+   {"⇧", "⇫", 2.5, Mod, Shift, .scheme = 1},

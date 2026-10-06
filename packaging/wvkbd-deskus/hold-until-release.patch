@@ -1,0 +1,15 @@
+--- keyboard.c
++++ keyboard.c
+@@ -396,9 +396,10 @@
+             kb->last_swipe = intersect_key;
+             kbd_draw_key(kb, kb->last_swipe, Swipe);
+         }
+-    } else {
+-        kbd_unpress_key(kb, time);
+     }
++    // omarchy-tablet-mode: a held key stays held until the finger lifts, like a physical
++    // key, so hold-to-talk keys (F9) survive a slightly moving finger. Upstream releases it
++    // on any motion. The press itself was already sent at touch-down, so typing is unchanged.
+ 
+     kbd_clear_last_popup(kb);
+ }

@@ -12,11 +12,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/alanroman117.tablet-mode"
 UNIT="omarchy-tablet-mode.service"
 UNIT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT"
-FILES=(manifest.json Widget.qml bin systemd README.md LICENSE)
+FILES=(manifest.json Widget.qml bin systemd packaging README.md LICENSE)
 
 omarchy-plugin-validate "$REPO" >/dev/null 2>&1 || { omarchy-plugin-validate "$REPO"; exit 1; }
 
 mkdir -p "$DEST"
+# The shell hot-reloads a plugin's bin/ and data, but not an already-loaded Widget.qml.
+widget_before=$(sha256sum "$DEST/Widget.qml" 2>/dev/null | cut -d' ' -f1)
 for item in "${FILES[@]}"; do
   rsync -a --delete "$REPO/$item" "$DEST/"
 done
@@ -27,6 +29,10 @@ for path in "$DEST"/* "$DEST"/.[!.]*; do
   [[ " ${FILES[*]} " == *" $name "* ]] || rm -rf "$path"
 done
 echo "Deployed to $DEST"
+
+if [[ $(sha256sum "$DEST/Widget.qml" | cut -d' ' -f1) != "$widget_before" ]] && command -v omarchy >/dev/null; then
+  omarchy restart shell >/dev/null 2>&1 && echo "Widget.qml changed: restarted the Omarchy shell to load it"
+fi
 
 # Keep an installed unit in step with the template, then restart a running service.
 if [[ -f $UNIT_FILE ]]; then

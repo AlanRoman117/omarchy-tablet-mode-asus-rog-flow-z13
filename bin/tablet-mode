@@ -35,7 +35,9 @@ HOOK="$CONFIG_HOME/omarchy/hooks/theme-set.d/tablet-mode.sh"
 SHELL_JSON="$CONFIG_HOME/omarchy/shell.json"
 LINK="$HOME/.local/bin/tablet-mode"
 THEME_COLORS="$HOME/.local/state/omarchy/current/theme/colors.toml"
-OSK_BIN=wvkbd-mobintl
+# On-screen keyboards, preferred first: the US desktop layout built from packaging/wvkbd-deskus,
+# then the AUR wvkbd's phone-style layout. The osk setting can pick one.
+OSK_BINS=(wvkbd-deskus wvkbd-mobintl)
 TWEAK_OPTIONS=(general:gaps_in general:gaps_out general:extend_border_grab_area general:resize_on_border cursor:hide_on_touch)
 # Tests: TABLET_MODE_DRYRUN=1 logs Hyprland/keyboard/notification actions to
 # $TABLET_MODE_LOG instead of doing them; TABLET_MODE_FIXTURES holds fake hyprctl output.
@@ -59,8 +61,9 @@ declare -A CFG=(
   [gaps_in]=8
   [gaps_out]=14
   [border_grab]=30
-  [osk_height_landscape]=300
+  [osk_height_landscape]=420
   [osk_height_portrait]=420
+  [osk]=auto
 )
 
 load_config() {
@@ -112,8 +115,11 @@ gaps_in=8
 gaps_out=14
 border_grab=30
 
+# On-screen keyboard: auto (the US desktop layout if installed), wvkbd-deskus or wvkbd-mobintl.
+osk=auto
+
 # On-screen keyboard height (pixels) in landscape and portrait.
-osk_height_landscape=300
+osk_height_landscape=420
 osk_height_portrait=420
 EOF
 }
@@ -339,6 +345,19 @@ tweaks_restore() {
 
 # --- on-screen keyboard (wvkbd) ----------------------------------------------------
 
+# The keyboard program to run, or nothing if none is installed.
+osk_bin() {
+  local want=${CFG[osk]} bin
+  if [[ $want =~ ^wvkbd-[a-z]+$ ]]; then
+    command -v "$want" >/dev/null && echo "$want"
+    return
+  fi
+  for bin in "${OSK_BINS[@]}"; do
+    command -v "$bin" >/dev/null && { echo "$bin"; return; }
+  done
+  return 1
+}
+
 osk_running() {
   local pid
   pid=$(cat "$OSK_PID" 2>/dev/null) && [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1)) && [[ $(cat "/proc/$pid/comm" 2>/dev/null) == wvkbd* ]] && echo "$pid"
@@ -353,10 +372,10 @@ osk_color() {
 
 osk_start() {
   if ((DRYRUN)); then action "osk start"; echo dry >"$OSK_PID"; return 0; fi
-  command -v "$OSK_BIN" >/dev/null || { log "$OSK_BIN isn't installed (tablet-mode install)"; return 1; }
-  local help args
-  help=$("$OSK_BIN" --help 2>&1 || true)
-  args=(-L "$(cfg_int osk_height_landscape 300)" -H "$(cfg_int osk_height_portrait 420)")
+  local bin help args
+  bin=$(osk_bin) || { log "No on-screen keyboard installed (tablet-mode install)"; return 1; }
+  help=$("$bin" --help 2>&1 || true)
+  args=(-L "$(cfg_int osk_height_landscape 420)" -H "$(cfg_int osk_height_portrait 420)")
   [[ $help == *--hidden* ]] && args+=(--hidden)
   if [[ -f $THEME_COLORS ]]; then
     local bg dark lighter fg accent flag value
@@ -366,7 +385,7 @@ osk_start() {
       [[ $help == *"${flag% *} "* ]] && args+=(${flag})
     done
   fi
-  "$OSK_BIN" "${args[@]}" >/dev/null 2>&1 3<&- &
+  "$bin" "${args[@]}" >/dev/null 2>&1 3<&- &
   echo $! >"$OSK_PID"
   sleep 0.3
   [[ $help == *--hidden* ]] || kill -USR1 $! 2>/dev/null || true
@@ -466,7 +485,7 @@ pid_of() {
   local pid
   pid=$(cat "$1" 2>/dev/null) || return 1
   [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1)) || return 1
-  tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$2" || return 1
+  { tr '\0' ' ' <"/proc/$pid/cmdline"; } 2>/dev/null | grep -qF -- "$2" || return 1
   echo "$pid"
 }
 
@@ -910,7 +929,22 @@ cmd_osk() {
 
 packages_missing() {
   command -v monitor-sensor >/dev/null || echo iio-sensor-proxy
-  command -v "$OSK_BIN" >/dev/null || echo wvkbd
+  osk_bin >/dev/null || echo wvkbd-deskus
+}
+
+# The keyboard recipe's version (pkgver-pkgrel) and the installed one, if any.
+osk_recipe_version() {
+  local f="$ROOT/packaging/wvkbd-deskus/PKGBUILD"
+  [[ -f $f ]] || return 1
+  echo "$(sed -n 's/^pkgver=//p' "$f")-$(sed -n 's/^pkgrel=//p' "$f")"
+}
+osk_installed_version() { pacman -Q wvkbd-deskus 2>/dev/null | awk '{print $2}'; }
+
+# True when wvkbd-deskus is installed but older than the recipe shipped with the plugin.
+osk_outdated() {
+  local have want
+  have=$(osk_installed_version) want=$(osk_recipe_version) || return 1
+  [[ -n $have ]] && command -v vercmp >/dev/null && (($(vercmp "$have" "$want") < 0))
 }
 
 # One word for the bar card: disabled, install, enable, stopped or ready.
@@ -969,17 +1003,21 @@ cmd_status() {
     "  touch tweaks \(if .tweaks then "on" else "off" end)"' <<<"$st"
 }
 
-# Builds an AUR package from a checkout you've just read: the recipe shown is exactly the one
-# makepkg builds (no second download), and makepkg checks the upstream source's checksums.
-aur_install_reviewed() {
-  local pkg=$1 dir files
-  command -v git >/dev/null && command -v makepkg >/dev/null || die "Needs git and base-devel (makepkg) to build $pkg"
+# Builds a package from a recipe you've just read. The recipe is copied to a private build
+# folder first; everything in that folder is shown, and that same folder is what makepkg
+# builds. makepkg checks the upstream source against the recipe's pinned checksums.
+build_reviewed() {
+  local src=$1 pkg dir file
+  pkg=$(basename "$src")
+  command -v makepkg >/dev/null || die "Needs base-devel (makepkg) to build $pkg"
+  [[ -f $src/PKGBUILD ]] || die "No recipe at $src"
   dir=$(mktemp -d) || die "Can't create a build folder"
-  git clone --quiet --depth 1 "https://aur.archlinux.org/$pkg.git" "$dir/$pkg" || { rm -rf "$dir"; die "Couldn't fetch $pkg from the AUR"; }
-  step "$pkg's build recipe (from the AUR; this exact file is what gets built)"
-  files=$(cd "$dir/$pkg" && git ls-files | grep -vE '^(PKGBUILD|\.SRCINFO|\.gitignore)$' | xargs)
-  sed 's/^/  | /' "$dir/$pkg/PKGBUILD"
-  [[ -z $files ]] || note "Other files in the recipe, also used by the build: $files (in $dir/$pkg)"
+  cp -r "$src" "$dir/$pkg"
+  step "$pkg: the complete recipe that will be built"
+  for file in "$dir/$pkg"/*; do
+    echo "  ── $(basename "$file")"
+    sed 's/^/  | /' "$file"
+  done
   echo
   if ! confirm "Build and install $pkg from this recipe?"; then
     rm -rf "$dir"
@@ -993,26 +1031,37 @@ cmd_install() {
   while (($#)); do case $1 in -y | --yes) YES=1 ;; *) die "Unknown option $1" ;; esac; shift; done
   local missing
   missing=$(packages_missing | xargs)
+  # The phone-style wvkbd works, but the US desktop layout is the one to have.
+  command -v wvkbd-deskus >/dev/null || [[ $missing == *wvkbd-deskus* ]] || missing+=" wvkbd-deskus"
+  # An older build of the keyboard than the recipe: rebuild it.
+  osk_outdated && [[ $missing != *wvkbd-deskus* ]] && missing+=" wvkbd-deskus"
+  missing=$(xargs <<<"$missing")
   step "Install"
   if [[ -z $missing ]]; then
-    ok "iio-sensor-proxy and wvkbd are installed"
+    ok "iio-sensor-proxy and wvkbd-deskus are installed"
     echo
     echo "Next: tablet-mode enable"
     return 0
   fi
   echo "  This installs (it asks for your password):"
   [[ $missing == *iio-sensor-proxy* ]] && echo "   - iio-sensor-proxy, from the Arch repos: reads the accelerometer"
-  [[ $missing == *wvkbd* ]] && echo "   - wvkbd, from the AUR: the on-screen keyboard. You'll see its full build recipe first."
+  osk_outdated && echo "   - an update of wvkbd-deskus, $(osk_installed_version) -> $(osk_recipe_version):"
+  [[ $missing == *wvkbd-deskus* ]] && echo "   - wvkbd-deskus: the on-screen keyboard with a US desktop layout, built from this plugin's"
+  [[ $missing == *wvkbd-deskus* ]] && echo "     recipe (wvkbd 0.20 from upstream plus a 3-line layout change). You'll see all of it first."
   confirm "Continue?" || exit 1
   if [[ $missing == *iio-sensor-proxy* ]]; then
     if command -v omarchy-pkg-add >/dev/null; then omarchy-pkg-add iio-sensor-proxy; else sudo pacman -S --needed iio-sensor-proxy; fi
   fi
-  if [[ $missing == *wvkbd* ]]; then
-    aur_install_reviewed wvkbd
+  if [[ $missing == *wvkbd-deskus* ]]; then
+    build_reviewed "$ROOT/packaging/wvkbd-deskus"
   fi
   missing=$(packages_missing | xargs)
   [[ -z $missing ]] || die "Still missing: $missing"
+  command -v wvkbd-deskus >/dev/null || die "wvkbd-deskus didn't install"
+  osk_outdated && die "wvkbd-deskus is still the older build ($(osk_installed_version))"
   ok "Installed"
+  # A running service started the previous keyboard; restart it so the new one is used.
+  systemctl --user try-restart "$UNIT" 2>/dev/null && systemctl --user is-active --quiet "$UNIT" && ok "Service restarted with the new keyboard"
   echo
   echo "Next: tablet-mode enable"
 }
@@ -1205,7 +1254,9 @@ cmd_doctor() {
     step "Tablet mode is enabled"
     check "Accelerometer present" has_accelerometer
     check "iio-sensor-proxy installed" command -v monitor-sensor
-    check "wvkbd installed" command -v "$OSK_BIN"
+    check "On-screen keyboard installed ($(osk_bin || echo none))" osk_bin
+    [[ $(osk_bin) == wvkbd-deskus ]] || note "Using the phone-style layout; tablet-mode install adds the US desktop one"
+    osk_outdated && note "wvkbd-deskus $(osk_installed_version) is older than the plugin's recipe ($(osk_recipe_version)); run: tablet-mode install"
     check "Built-in display found ($(internal_output 2>/dev/null || echo none))" internal_output
     check "Touchscreen found" test -n "$(touch_devices 2>/dev/null)"
     check "Service enabled" systemctl --user is-enabled --quiet "$UNIT"
@@ -1216,7 +1267,7 @@ cmd_doctor() {
     check "Service not running" eval '! systemctl --user is-active --quiet "$UNIT" && ! daemon_running >/dev/null'
     check "Service not enabled at login" eval '! systemctl --user is-enabled --quiet "$UNIT"'
     check "No accelerometer client (monitor-sensor)" no_proc monitor-sensor
-    check "No on-screen keyboard running" no_proc "$OSK_BIN"
+    check "No on-screen keyboard running" eval '! pgrep -u "$(id -u)" -f "^wvkbd-" >/dev/null'
     check "Built-in display not rotated" test "$(current_transform)" = 0
     check "No live changes recorded (rotation, touch mapping, tweaks)" eval '[[ ! -e $ROTATED && ! -e $TOUCH_MAPPED && ! -e $TWEAKS ]]'
     if ((full)); then
@@ -1289,9 +1340,9 @@ cmd_uninstall() {
   rm -f "$MENU.tablet-mode.bak"
   ok "Service, ~/.local/bin/tablet-mode and the menu backup removed"
   if [[ -f $CONF ]] && confirm "Delete your settings ($CONF)?"; then rm -f "$CONF" && ok "Settings deleted"; fi
-  if ((packages)) && confirm "Also uninstall iio-sensor-proxy and wvkbd (sudo)?"; then
+  if ((packages)) && confirm "Also uninstall iio-sensor-proxy and the on-screen keyboards (sudo)?"; then
     local installed
-    installed=$(pacman -Qq iio-sensor-proxy wvkbd 2>/dev/null | xargs)
+    installed=$(pacman -Qq iio-sensor-proxy wvkbd wvkbd-deskus 2>/dev/null | xargs)
     [[ -z $installed ]] || sudo pacman -Rns $installed
   fi
   echo
@@ -1306,7 +1357,8 @@ Detaching the keyboard turns on auto-rotation, shows the on-screen keyboard
 (wvkbd) and applies touch tweaks; attaching it puts everything back.
 
 Setup
-  install               iio-sensor-proxy (repos) + wvkbd (AUR); asks for your password
+  install               iio-sensor-proxy (repos) + wvkbd-deskus (built from this plugin's
+                        reviewed recipe); asks for your password
   enable                Start the service, add the menu entries and the bar icon
   disable [--full]      Plain Omarchy: stop everything and undo every change.
                         --full also removes the menu entries and the bar icon

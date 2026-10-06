@@ -1,16 +1,13 @@
 # To do
 
-## On-screen keyboard layout (raised 2026-10-05)
+## On-screen keyboard layout (raised 2026-10-05): done
 
-The user finds the current layout awkward to type on: key spacing and placement don't feel like a standard keyboard. Not a blocker.
-
-- The AUR package only builds `wvkbd-mobintl`, a phone-style layout with offset rows, no number row on the main layer, and Cmp/Ctr keys.
-- Options to look at:
-  - wvkbd's `deskintl` layout. It's built with `make LAYOUT=deskintl` and gives a desktop-style layout with a number row. It would need its own build or package, or an AUR `-git` variant.
-  - Choosing layers with `-l` / `--landscape-layers` (`wvkbd-mobintl --list-layers`).
-  - Font size (`--fn`), height (`osk_height_*`) and turning off key-press popups (`--no-popup`).
-  - Alternatives if wvkbd can't be made comfortable. squeekboard has a fuller layout but replaces fcitx5 as the input method.
-- Decide together with the user. Show screenshots of the candidates first.
+- **Problem:** the AUR wvkbd's phone-style `mobintl` layouts put Tab, Enter and the arrows in unexpected places.
+- **Now:** `wvkbd-deskus`, built from `packaging/wvkbd-deskus` (upstream 0.20 deskintl, with Cmp taken off the home row). A real US layout: Tab on the left, Caps then the home row then Enter, and an inverted-T of arrows bottom right.
+- **Show/hide:** a floating ⌨ button in tablet mode, bottom right, that moves up above the keyboard while it's shown.
+- [x] Installed wvkbd-deskus 0.20-1 on the Z13 and typed on it in tablet mode. The user says it's "much better".
+- [x] Holding F9 (Voxtype) let go on the slightest finger movement, because upstream releases on any touch motion. Fixed in 0.20-2 with `hold-until-release.patch`. Installed and re-tested 2026-10-05: hold-to-dictate works even with a sliding finger.
+- Possible later: a symbols-page review, and key height (6 rows in 300 px).
 
 ## Suspend hang in tablet mode (2026-10-05): open
 
