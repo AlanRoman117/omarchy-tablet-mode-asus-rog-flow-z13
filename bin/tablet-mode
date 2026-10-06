@@ -1,0 +1,1349 @@
+#!/bin/bash
+
+# tablet-mode: tablet mode for Omarchy on detachables (built on a ROG Flow Z13).
+# Detaching the keyboard (or `tablet-mode on`) turns on auto-rotation, shows the
+# on-screen keyboard (wvkbd) and applies touch-friendly tweaks; attaching it puts
+# everything back. `tablet-mode disable` returns the system to plain Omarchy.
+#
+# Usage: tablet-mode <command> [args]   (tablet-mode help)
+
+set -uo pipefail
+
+VERSION=0.1.0
+PLUGIN_ID="alanroman117.tablet-mode"
+SELF="$(readlink -f "$0")"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+CONF="${TABLET_MODE_CONF:-$CONFIG_HOME/omarchy/tablet-mode.conf}"
+RUN_DIR="${TABLET_MODE_RUN_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omarchy-tablet-mode}"
+STATE="$RUN_DIR/state.json"
+FIFO="$RUN_DIR/events"
+DAEMON_PID="$RUN_DIR/daemon.pid"
+OSK_PID="$RUN_DIR/osk.pid"
+READERS_DIR="$RUN_DIR/readers"
+INHIBITOR="$RUN_DIR/inhibitor.pid"
+# The live changes this plugin has made, so restore undoes exactly those and nothing else.
+ROTATED="$RUN_DIR/rotated"           # "<output> <transform before the first rotation>"
+TOUCH_MAPPED="$RUN_DIR/touch-mapped" # input devices whose transform/output were set
+TWEAKS="$RUN_DIR/tweaks.lua"         # hl.config(...) that puts the pre-tweak values back
+UNIT="omarchy-tablet-mode.service"
+UNIT_FILE="$CONFIG_HOME/systemd/user/$UNIT"
+MENU="$CONFIG_HOME/omarchy/extensions/omarchy-menu.jsonc"
+MENU_BEGIN="// >>> tablet-mode: managed by $PLUGIN_ID (tablet-mode disable --full removes this block)"
+MENU_END="// <<< tablet-mode"
+HOOK="$CONFIG_HOME/omarchy/hooks/theme-set.d/tablet-mode.sh"
+SHELL_JSON="$CONFIG_HOME/omarchy/shell.json"
+LINK="$HOME/.local/bin/tablet-mode"
+THEME_COLORS="$HOME/.local/state/omarchy/current/theme/colors.toml"
+OSK_BIN=wvkbd-mobintl
+TWEAK_OPTIONS=(general:gaps_in general:gaps_out general:extend_border_grab_area general:resize_on_border cursor:hide_on_touch)
+# Tests: TABLET_MODE_DRYRUN=1 logs Hyprland/keyboard/notification actions to
+# $TABLET_MODE_LOG instead of doing them; TABLET_MODE_FIXTURES holds fake hyprctl output.
+DRYRUN=${TABLET_MODE_DRYRUN:-0}
+FIXTURES=${TABLET_MODE_FIXTURES:-}
+
+# --- settings ------------------------------------------------------------------
+
+declare -A CFG=(
+  [enabled]=true
+  [keyboard]=0b05:1a30
+  [output]=auto
+  [auto_rotate]=true
+  [show_keyboard]=true
+  [touch_tweaks]=true
+  [notify]=true
+  [orientation_offset]=0
+  [orientation_mirror]=false
+  [debounce_ms]=400
+  [resume_delay_ms]=2000
+  [gaps_in]=8
+  [gaps_out]=14
+  [border_grab]=30
+  [osk_height_landscape]=300
+  [osk_height_portrait]=420
+)
+
+load_config() {
+  [[ -f $CONF ]] || return 0
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ ^[[:space:]]*([a-z_]+)[[:space:]]*=[[:space:]]*([^#[:space:]]*) ]] || continue
+    [[ -v CFG[${BASH_REMATCH[1]}] ]] && CFG[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
+  done <"$CONF"
+}
+
+cfg_bool() { [[ ${CFG[$1]} == true ]]; }
+
+# cfg_int <key> <fallback>: the setting if it's a plain number, else the fallback.
+cfg_int() {
+  local value=${CFG[$1]}
+  if [[ $value =~ ^[0-9]{1,5}$ ]]; then echo "$value"; else echo "$2"; fi
+}
+
+write_default_config() {
+  mkdir -p "$(dirname "$CONF")"
+  cat >"$CONF" <<'EOF'
+# Tablet mode (alanroman117.tablet-mode). Edit, then: systemctl --user restart omarchy-tablet-mode
+
+# false = plain Omarchy: nothing runs, nothing is changed (tablet-mode disable / enable).
+enabled=true
+
+# USB id of the detachable keyboard (vendor:product, from lsusb). Detached = tablet mode.
+# "none" turns detection off; then only the toggle switches modes.
+keyboard=0b05:1a30
+
+# Built-in display; "auto" picks the first eDP/LVDS/DSI output.
+output=auto
+
+# What tablet mode does.
+auto_rotate=true
+show_keyboard=true
+touch_tweaks=true
+notify=true
+
+# Accelerometer mapping, set by `tablet-mode calibrate`.
+orientation_offset=0
+orientation_mirror=false
+# How long an orientation has to hold before the screen turns (ms).
+debounce_ms=400
+
+# Touch tweaks (pixels): window gaps, and how far outside a window border a drag still resizes it.
+gaps_in=8
+gaps_out=14
+border_grab=30
+
+# On-screen keyboard height (pixels) in landscape and portrait.
+osk_height_landscape=300
+osk_height_portrait=420
+EOF
+}
+
+# set_config <key> <value>: keys and values come from this script, never from the user.
+set_config() {
+  [[ -f $CONF ]] || write_default_config
+  if grep -qE "^[[:space:]]*$1[[:space:]]*=" "$CONF"; then
+    sed -i -E "s|^[[:space:]]*$1[[:space:]]*=.*|$1=$2|" "$CONF"
+  else
+    printf '%s=%s\n' "$1" "$2" >>"$CONF"
+  fi
+  CFG[$1]=$2
+}
+
+# --- output helpers ------------------------------------------------------------
+
+ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; }
+note() { printf '  \033[33m•\033[0m %s\n' "$*"; }
+step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+die() { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+log() { printf '%s\n' "$*" >&2; }
+action() { printf '%s\n' "$*" >>"${TABLET_MODE_LOG:-/dev/stderr}"; }
+
+YES=0
+confirm() {
+  ((YES)) && return 0
+  if command -v gum >/dev/null && [[ -t 0 ]]; then
+    gum confirm "$1"
+  else
+    local reply
+    read -r -p "$1 [y/N] " reply
+    [[ $reply == [yY]* ]]
+  fi
+}
+
+notify() {
+  if ((DRYRUN)); then action "notify $1: $2"; return 0; fi
+  if command -v omarchy-notification-send >/dev/null; then
+    omarchy-notification-send "$1" "$2" -t 4000 >/dev/null 2>&1 || true
+  elif command -v notify-send >/dev/null; then
+    notify-send -a "Tablet mode" "$1" "$2" >/dev/null 2>&1 || true
+  fi
+}
+
+refresh_widget() {
+  ((DRYRUN)) && return 0
+  command -v omarchy-shell >/dev/null && omarchy-shell "$PLUGIN_ID" refresh >/dev/null 2>&1 || true
+}
+
+join() {
+  local sep=$1 out="" item
+  shift
+  for item; do out+=${out:+$sep}$item; done
+  printf '%s' "$out"
+}
+
+now_ms() {
+  local t=${EPOCHREALTIME//[.,]/}
+  echo $((10#$t / 1000))
+}
+
+# --- Hyprland --------------------------------------------------------------------
+
+hypr_available() {
+  ((DRYRUN)) && return 0
+  [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] && hyprctl version >/dev/null 2>&1
+}
+
+hypr_eval() {
+  if ((DRYRUN)); then
+    action "eval $1"
+    # Let the fake monitor follow the rotation, as the real one would.
+    [[ $1 == hl.monitor* && $1 =~ transform\ =\ ([0-7]) ]] && echo "${BASH_REMATCH[1]}" >"$RUN_DIR/fake-transform"
+    return 0
+  fi
+  local out
+  out=$(hyprctl eval "$1" 2>&1)
+  [[ $out == ok* ]] && return 0
+  log "hyprctl eval failed: $out"
+  return 1
+}
+
+# hypr_json monitors|devices|getoption <option>
+hypr_json() {
+  if [[ -n $FIXTURES ]]; then
+    case $1 in
+      getoption) cat "$FIXTURES/option-${2//:/_}.json" 2>/dev/null ;;
+      monitors)
+        local t
+        t=$(cat "$RUN_DIR/fake-transform" 2>/dev/null || echo 0)
+        jq -c --argjson t "$t" 'map(if (.name | test("^eDP")) then .transform = $t else . end)' "$FIXTURES/monitors.json"
+        ;;
+      *) cat "$FIXTURES/$1.json" ;;
+    esac
+    return
+  fi
+  hyprctl "$@" -j 2>/dev/null
+}
+
+# Device and output names go into Lua source, so they're escaped (and control characters refused).
+lua_str() {
+  local s=$1
+  [[ $s == *[[:cntrl:]]* ]] && return 1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
+internal_output() {
+  local out=${CFG[output]}
+  if [[ -z $out || $out == auto ]]; then
+    out=$(hypr_json monitors all | jq -r 'first(.[] | select(.name | test("^(eDP|LVDS|DSI)")) | .name) // empty')
+  fi
+  [[ $out =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  printf '%s\n' "$out"
+}
+
+# Prints "<mode> <position> <scale> <transform>" for an enabled output.
+# Hyprland reports the unrotated mode even while rotated, so this can be replayed as is.
+monitor_geometry() {
+  hypr_json monitors | jq -r --arg o "$1" \
+    'first(.[] | select(.name == $o and ((.disabled // false) | not))) | "\(.width)x\(.height)@\(.refreshRate) \(.x)x\(.y) \(.scale) \(.transform)"' |
+    grep -E '^[0-9]+x[0-9]+@[0-9.]+ -?[0-9]+x-?[0-9]+ [0-9.]+ [0-7]$'
+}
+
+current_transform() {
+  local out geo
+  out=$(internal_output) && geo=$(monitor_geometry "$out") && echo "${geo##* }" || echo 0
+}
+
+# rotate_to <0-3>: turns the built-in display, replaying its live mode, position
+# and scale (a transform-only rule would reset the scale), and maps touch to match.
+rotate_to() {
+  local t=$1 out geo mode pos scale cur
+  out=$(internal_output) || { log "No built-in display found"; return 1; }
+  geo=$(monitor_geometry "$out") || return 0 # panel off (docked): nothing to turn
+  read -r mode pos scale cur <<<"$geo"
+  if ((cur != t)); then
+    [[ -f $ROTATED ]] || printf '%s %s\n' "$out" "$cur" >"$ROTATED"
+    hypr_eval "hl.monitor({ output = \"$out\", mode = \"$mode\", position = \"$pos\", scale = $scale, transform = $t })" || return 1
+  fi
+  map_touch "$t" "$out"
+  TRANSFORM=$t
+}
+
+# Touchscreen digitizers plus their pens (tablet devices named after a touchscreen).
+touch_devices() {
+  hypr_json devices | jq -r '[.touch[]?.name] as $t | ($t[]), (.tablets[]?.name | select(. as $n | any($t[]; . as $p | $n | startswith($p))))'
+}
+
+# Hyprland doesn't reliably carry an output's transform over to touch input, so set it per device.
+map_touch() {
+  local t=$1 out=$2 name q
+  while IFS= read -r name; do
+    [[ -n $name ]] && q=$(lua_str "$name") || continue
+    hypr_eval "hl.device({ name = $q, transform = $t, output = \"$out\" })" || continue
+    grep -qxF -- "$name" "$TOUCH_MAPPED" 2>/dev/null || printf '%s\n' "$name" >>"$TOUCH_MAPPED"
+  done < <(touch_devices)
+}
+
+unmap_touch() {
+  [[ -f $TOUCH_MAPPED ]] || return 0
+  local name q
+  while IFS= read -r name; do
+    q=$(lua_str "$name") || continue
+    hypr_eval "hl.device({ name = $q, transform = 0, output = \"\" })" || true
+  done <"$TOUCH_MAPPED"
+  rm -f "$TOUCH_MAPPED"
+}
+
+# Puts the display back the way it was before the first rotation.
+unrotate() {
+  if [[ -f $ROTATED ]]; then
+    local out orig geo mode pos scale cur
+    read -r out orig <"$ROTATED"
+    if [[ $out =~ ^[A-Za-z0-9._-]+$ && $orig =~ ^[0-7]$ ]] && geo=$(monitor_geometry "$out"); then
+      read -r mode pos scale cur <<<"$geo"
+      ((cur == orig)) || hypr_eval "hl.monitor({ output = \"$out\", mode = \"$mode\", position = \"$pos\", scale = $scale, transform = $orig })"
+    fi
+    rm -f "$ROTATED"
+  fi
+  unmap_touch
+  TRANSFORM=0
+}
+
+# Lua literal for an option's current value, from `hyprctl getoption -j`.
+option_lua() {
+  hypr_json getoption "$1" | jq -r '
+    if has("css") then
+      (.css | split(" ") | map(select(. != "") | tonumber)) as $v
+      | if ($v | length) == 4 then "{ top = \($v[0]), right = \($v[1]), bottom = \($v[2]), left = \($v[3]) }" else ($v[0] | tostring) end
+    elif has("bool") then (.bool | tostring)
+    elif has("int") then (.int | tostring)
+    elif has("float") then (.float | tostring)
+    else empty end' 2>/dev/null
+}
+
+tweaks_apply() {
+  local gi go bg
+  gi=$(cfg_int gaps_in 8) go=$(cfg_int gaps_out 14) bg=$(cfg_int border_grab 30)
+  if [[ ! -f $TWEAKS ]]; then
+    local opt value general=() cursor=()
+    for opt in "${TWEAK_OPTIONS[@]}"; do
+      value=$(option_lua "$opt")
+      [[ -n $value ]] || { log "Can't read $opt; touch tweaks skipped"; return 1; }
+      if [[ $opt == general:* ]]; then general+=("${opt#*:} = $value"); else cursor+=("${opt#*:} = $value"); fi
+    done
+    printf 'hl.config({ general = { %s }, cursor = { %s } })\n' "$(join ", " "${general[@]}")" "$(join ", " "${cursor[@]}")" >"$TWEAKS"
+  fi
+  hypr_eval "hl.config({ general = { gaps_in = $gi, gaps_out = $go, extend_border_grab_area = $bg, resize_on_border = true }, cursor = { hide_on_touch = true } })" || return 1
+  TWEAKS_ON=true
+}
+
+tweaks_restore() {
+  if [[ -f $TWEAKS ]]; then
+    hypr_eval "$(<"$TWEAKS")" || log "Couldn't put the pre-tweak settings back"
+    rm -f "$TWEAKS"
+  fi
+  TWEAKS_ON=false
+}
+
+# --- on-screen keyboard (wvkbd) ----------------------------------------------------
+
+osk_running() {
+  local pid
+  pid=$(cat "$OSK_PID" 2>/dev/null) && [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1)) && [[ $(cat "/proc/$pid/comm" 2>/dev/null) == wvkbd* ]] && echo "$pid"
+}
+
+# osk_color <colors.toml key> <fallback>: RRGGBB from the current Omarchy theme.
+osk_color() {
+  local value
+  value=$(sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"#?([0-9A-Fa-f]{6})\".*/\1/p" "$THEME_COLORS" 2>/dev/null | head -1)
+  echo "${value:-$2}"
+}
+
+osk_start() {
+  if ((DRYRUN)); then action "osk start"; echo dry >"$OSK_PID"; return 0; fi
+  command -v "$OSK_BIN" >/dev/null || { log "$OSK_BIN isn't installed (tablet-mode install)"; return 1; }
+  local help args
+  help=$("$OSK_BIN" --help 2>&1 || true)
+  args=(-L "$(cfg_int osk_height_landscape 300)" -H "$(cfg_int osk_height_portrait 420)")
+  [[ $help == *--hidden* ]] && args+=(--hidden)
+  if [[ -f $THEME_COLORS ]]; then
+    local bg dark lighter fg accent flag value
+    bg=$(osk_color background 1e1e2e) dark=$(osk_color darker_background "$bg")
+    lighter=$(osk_color lighter_background "$bg") fg=$(osk_color foreground cdd6f4) accent=$(osk_color accent 89b4fa)
+    for flag in "--bg $dark" "--fg $lighter" "--fg-sp $bg" "--press $accent" "--press-sp $accent" "--text $fg" "--text-sp $fg"; do
+      [[ $help == *"${flag% *} "* ]] && args+=(${flag})
+    done
+  fi
+  "$OSK_BIN" "${args[@]}" >/dev/null 2>&1 3<&- &
+  echo $! >"$OSK_PID"
+  sleep 0.3
+  [[ $help == *--hidden* ]] || kill -USR1 $! 2>/dev/null || true
+}
+
+osk_show() {
+  if ((DRYRUN)); then [[ -f $OSK_PID ]] || osk_start; action "osk show"; OSK_VISIBLE=true; return 0; fi
+  local pid
+  pid=$(osk_running) || { osk_start || return 1; pid=$(osk_running) || return 1; }
+  kill -USR2 "$pid" 2>/dev/null && OSK_VISIBLE=true
+}
+
+osk_hide() {
+  OSK_VISIBLE=false
+  if ((DRYRUN)); then [[ -f $OSK_PID ]] && action "osk hide"; return 0; fi
+  local pid
+  pid=$(osk_running) && kill -USR1 "$pid" 2>/dev/null
+  return 0
+}
+
+osk_stop() {
+  OSK_VISIBLE=false
+  if ((DRYRUN)); then [[ -f $OSK_PID ]] && action "osk stop"; rm -f "$OSK_PID"; return 0; fi
+  local pid
+  pid=$(osk_running) && kill "$pid" 2>/dev/null
+  rm -f "$OSK_PID"
+}
+
+# After a theme change: start it again with the new colours, showing it if it was showing.
+osk_restyle() {
+  [[ -f $OSK_PID ]] || return 0
+  local was=$OSK_VISIBLE
+  osk_stop
+  osk_start
+  [[ $was == true ]] && osk_show
+  return 0
+}
+
+# --- event readers (each writes one line per event into the daemon's FIFO) ---------
+
+cmd__sensor_reader() {
+  local args=() line o
+  monitor-sensor --help 2>&1 | grep -q -- --accel && args=(--accel)
+  while true; do
+    stdbuf -oL monitor-sensor "${args[@]}" 2>/dev/null | while IFS= read -r line; do
+      case $line in
+        *"orientation changed:"*) echo "orient ${line##*: }" ;;
+        *"Has accelerometer (orientation:"*) o=${line##*orientation: } && echo "orient ${o%%[,)]*}" ;;
+      esac
+    done
+    sleep 2
+  done
+}
+
+cmd__usb_reader() {
+  local line
+  while true; do
+    stdbuf -oL udevadm monitor --udev --subsystem-match=usb/usb_device 2>/dev/null | while IFS= read -r line; do
+      [[ $line == UDEV* ]] && echo usb
+    done
+    sleep 2
+  done
+}
+
+cmd__hypr_reader() {
+  local socket="${XDG_RUNTIME_DIR:-}/hypr/${HYPRLAND_INSTANCE_SIGNATURE:-}/.socket2.sock" line
+  while true; do
+    socat -U - "UNIX-CONNECT:$socket" 2>/dev/null | while IFS= read -r line; do
+      case $line in
+        configreloaded*) echo "hypr reload" ;;
+        "monitoradded>>"*) echo "hypr monitor ${line#*>>}" ;;
+      esac
+    done
+    sleep 2
+  done
+}
+
+# logind's PrepareForSleep: true just before suspend, false after resume.
+cmd__sleep_reader() {
+  local line
+  while true; do
+    stdbuf -oL gdbus monitor --system --dest org.freedesktop.login1 --object-path /org/freedesktop/login1 2>/dev/null |
+      while IFS= read -r line; do
+        case $line in
+          *": org.freedesktop.login1.Manager.PrepareForSleep (true,)"*) echo "sleep pre" ;;
+          *": org.freedesktop.login1.Manager.PrepareForSleep (false,)"*) echo "sleep post" ;;
+        esac
+      done
+    sleep 2
+  done
+}
+
+# pid_of <pidfile> <cmdline-fragment>: the pid recorded in pidfile, but only if it's a real
+# process (not 0 or 1, which `kill -- -PID` would turn into "every process") whose command
+# line still contains the fragment. A stale file whose pid was reused gives nothing.
+pid_of() {
+  local pid
+  pid=$(cat "$1" 2>/dev/null) || return 1
+  [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1)) || return 1
+  tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$2" || return 1
+  echo "$pid"
+}
+
+# spawn_group <pidfile> <command...>: runs the command as its own session and process-group
+# leader and records that process's pid. setsid(1) forks when it has to, so $! can't be
+# trusted to name the group; a kill aimed at it would silently miss.
+spawn_group() {
+  local pidfile=$1
+  shift
+  rm -f "$pidfile"
+  setsid bash -c 'echo $$ >"$0" && exec "$@"' "$pidfile" "$@" &
+  local launcher=$!
+  for _ in {1..80}; do
+    [[ -s $pidfile ]] && return 0
+    sleep 0.025
+  done
+  # Never leave an untracked process behind.
+  kill "$launcher" 2>/dev/null
+  return 1
+}
+
+# Each reader runs in its own session, so stopping it takes its whole pipeline down.
+start_reader() {
+  local name=$1
+  if ((DRYRUN)); then
+    [[ -f $READERS_DIR/$name ]] || { action "reader start $name"; echo dry >"$READERS_DIR/$name"; }
+    return 0
+  fi
+  reader_running "$name" && return 0
+  spawn_group "$READERS_DIR/$name" "$SELF" "_$name-reader" >"$FIFO" 2>/dev/null 3<&- ||
+    log "The $name reader didn't start"
+}
+
+stop_reader() {
+  local name=$1 pid
+  [[ -f $READERS_DIR/$name ]] || return 0
+  if ((DRYRUN)); then rm -f "$READERS_DIR/$name"; action "reader stop $name"; return 0; fi
+  pid=$(pid_of "$READERS_DIR/$name" "_$name-reader")
+  rm -f "$READERS_DIR/$name"
+  [[ -n $pid ]] || return 0
+  kill -- "-$pid" 2>/dev/null
+  # Wait for the whole group (monitor-sensor included) to be gone, so a claim is really released.
+  for _ in {1..40}; do
+    kill -0 -- "-$pid" 2>/dev/null || break
+    sleep 0.05
+  done
+  return 0
+}
+
+# A logind delay lock: suspend waits (up to InhibitDelayMaxSec) until it's released,
+# which gives the daemon time to let go of the accelerometer first.
+inhibit_take() {
+  if ((DRYRUN)); then
+    [[ -f $INHIBITOR ]] || { action "inhibit take"; echo dry >"$INHIBITOR"; }
+    return 0
+  fi
+  pid_of "$INHIBITOR" systemd-inhibit >/dev/null && return 0
+  command -v systemd-inhibit >/dev/null || return 0
+  spawn_group "$INHIBITOR" systemd-inhibit --what=sleep --mode=delay --who="Tablet mode" \
+    --why="Releasing the accelerometer and on-screen keyboard before sleep" sleep infinity >/dev/null 2>&1 3<&- ||
+    log "Couldn't take the sleep delay lock"
+}
+
+inhibit_release() {
+  local pid
+  [[ -f $INHIBITOR ]] || return 0
+  if ((DRYRUN)); then rm -f "$INHIBITOR"; action "inhibit release"; return 0; fi
+  pid=$(pid_of "$INHIBITOR" systemd-inhibit)
+  rm -f "$INHIBITOR"
+  [[ -n $pid ]] && kill -- "-$pid" 2>/dev/null
+  return 0
+}
+
+reader_running() { pid_of "$READERS_DIR/$1" "_$1-reader" >/dev/null; }
+
+# --- keyboard and accelerometer ------------------------------------------------------
+
+keyboard_state() {
+  if [[ -n $FIXTURES ]]; then cat "$FIXTURES/keyboard" 2>/dev/null || echo attached; return; fi
+  local want=${CFG[keyboard],,} dev
+  [[ $want =~ ^[0-9a-f]{4}:[0-9a-f]{4}$ ]] || { echo unknown; return; }
+  for dev in /sys/bus/usb/devices/*; do
+    [[ -f $dev/idVendor && -f $dev/idProduct ]] || continue
+    [[ "$(<"$dev/idVendor"):$(<"$dev/idProduct")" == "$want" ]] && { echo attached; return; }
+  done
+  echo detached
+}
+
+has_accelerometer() {
+  [[ -n $FIXTURES ]] && return 0
+  compgen -G "/sys/bus/iio/devices/iio:device*/in_accel_x_raw" >/dev/null
+}
+
+orient_index() {
+  case $1 in
+    normal) echo 0 ;;
+    left-up) echo 1 ;;
+    bottom-up) echo 2 ;;
+    right-up) echo 3 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Sensor orientation -> Hyprland transform, through the calibrated offset and mirror.
+transform_for() {
+  local i
+  i=$(orient_index "$1") || i=0
+  i=$(((i + $(cfg_int orientation_offset 0)) % 4))
+  cfg_bool orientation_mirror && ((i % 2 == 1)) && i=$((4 - i))
+  echo "$i"
+}
+
+# --- daemon -----------------------------------------------------------------------------
+
+daemon_running() {
+  local pid
+  pid=$(cat "$DAEMON_PID" 2>/dev/null) && [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null &&
+    tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'tablet-mode daemon' && echo "$pid"
+}
+
+write_state() {
+  mkdir -p "$RUN_DIR"
+  jq -n --arg mode "$MODE" --arg source "$SOURCE" --arg keyboard "$KBD" --argjson lock "$LOCK" \
+    --arg orientation "$ORIENT" --argjson transform "${TRANSFORM:-0}" --argjson osk "$OSK_VISIBLE" \
+    --argjson tweaks "$TWEAKS_ON" --argjson pid "$$" --argjson asleep "${ASLEEP:-false}" \
+    '{running: true, pid: $pid, mode: $mode, source: $source, keyboard: $keyboard, lock: $lock,
+      orientation: $orientation, transform: $transform, osk: $osk, tweaks: $tweaks, asleep: $asleep}' >"$STATE.tmp" &&
+    mv -f "$STATE.tmp" "$STATE"
+}
+
+notify_mode() {
+  local title=$1 body
+  shift
+  cfg_bool notify || return 0
+  body=$(join " · " "$@")
+  notify "$title" "${body^}"
+}
+
+# The accelerometer is only claimed while it's needed: iio-sensor-proxy powers it per claim.
+sensor_sync() {
+  if [[ $MODE == tablet && $LOCK != true && $ASLEEP != true ]] && cfg_bool auto_rotate; then
+    start_reader sensor
+  else
+    stop_reader sensor
+    PENDING=""
+  fi
+}
+
+enter_tablet() {
+  local parts=()
+  MODE=tablet SOURCE=$1
+  log "tablet mode ($1)"
+  if cfg_bool show_keyboard; then osk_show && parts+=("keyboard shown"); fi
+  if cfg_bool touch_tweaks; then tweaks_apply && parts+=("touch tweaks on"); fi
+  if cfg_bool auto_rotate; then
+    if [[ $LOCK == true ]]; then parts+=("rotation locked"); else parts+=("auto-rotation on"); fi
+  fi
+  sensor_sync
+  write_state
+  notify_mode "Tablet mode" "${parts[@]}"
+}
+
+enter_laptop() {
+  MODE=laptop SOURCE=$1
+  log "laptop mode ($1)"
+  sensor_sync
+  unrotate
+  osk_hide
+  tweaks_restore
+  write_state
+  notify_mode "Laptop mode" "landscape" "keyboard hidden"
+}
+
+on_orientation() {
+  orient_index "$1" >/dev/null || return 0
+  [[ $ASLEEP == true ]] && return 0
+  ORIENT=$1
+  if [[ $MODE == tablet && $LOCK != true ]] && cfg_bool auto_rotate; then
+    PENDING=$1 PENDING_AT=$(now_ms)
+  else
+    write_state
+  fi
+}
+
+# A keyboard that drops off the bus for a moment (resume, a loose connector) shouldn't
+# flip modes, so the decision waits until USB has been quiet for a bit.
+on_usb() { KBD_PENDING=$(now_ms); }
+
+on_usb_settled() {
+  local now
+  now=$(keyboard_state)
+  [[ $now == "$KBD" ]] && return 0
+  KBD=$now
+  case $KBD in
+    detached) enter_tablet keyboard ;;
+    attached) enter_laptop keyboard ;;
+  esac
+}
+
+# Re-assert our live changes after Hyprland put its own back.
+#   reload:  monitors.lua, device rules and options are the config's again, so the tweak
+#            snapshot is retaken from them before the tweaks go back on.
+#   monitor: the panel was re-added (dock, resume) and may have lost its transform;
+#            options didn't change, so the snapshot taken earlier still holds.
+# The record of the panel's original transform is never thrown away: losing it would leave
+# unrotate with nothing to go back to.
+reapply() {
+  if [[ -f $ROTATED ]]; then
+    rotate_to "$TRANSFORM"
+  elif [[ -f $TOUCH_MAPPED ]]; then
+    map_touch "$TRANSFORM" "$(internal_output)"
+  fi
+  if [[ $TWEAKS_ON == true ]]; then
+    [[ $1 == reload ]] && rm -f "$TWEAKS"
+    tweaks_apply
+  fi
+  write_state
+}
+
+on_hypr() {
+  case $1 in
+    reload) reapply reload ;;
+    "monitor "*) [[ ${1#monitor } == "$(internal_output 2>/dev/null)" ]] && reapply monitor ;;
+  esac
+  return 0
+}
+
+# Suspending with the accelerometer claimed hung the Z13 (2026-10-05), so before
+# sleep everything that talks to the sensor hub or draws on screen is let go, and
+# only then is the delay lock released. After resume it all comes back.
+on_sleep() {
+  case $1 in
+    pre)
+      ASLEEP=true RESUME_AT=""
+      OSK_RESTORE=$OSK_VISIBLE
+      log "sleep: releasing the accelerometer and the on-screen keyboard"
+      stop_reader sensor
+      PENDING=""
+      ((DRYRUN)) || sleep 0.3 # let iio-sensor-proxy switch the sensor off
+      [[ -f $OSK_PID ]] && osk_stop
+      write_state
+      inhibit_release
+      ;;
+    post)
+      inhibit_take
+      [[ $ASLEEP == true ]] && RESUME_AT=$(now_ms)
+      ;;
+  esac
+  return 0
+}
+
+on_command() {
+  case "$1 ${2:-}" in
+    "on "*) [[ $MODE == tablet ]] || enter_tablet manual ;;
+    "off "*) [[ $MODE == laptop ]] || enter_laptop manual ;;
+    "toggle "*) if [[ $MODE == tablet ]]; then enter_laptop manual; else enter_tablet manual; fi ;;
+    "lock on") LOCK=true; sensor_sync; write_state ;;
+    "lock off") LOCK=false; sensor_sync; write_state ;;
+    "lock toggle")
+      if [[ $LOCK == true ]]; then LOCK=false; else LOCK=true; fi
+      sensor_sync
+      write_state
+      ;;
+    "rotate "[0-3])
+      LOCK=true
+      sensor_sync
+      rotate_to "$2"
+      write_state
+      ;;
+    "osk show") osk_show; write_state ;;
+    "osk hide") osk_hide; write_state ;;
+    "osk toggle")
+      if [[ $OSK_VISIBLE == true ]]; then osk_hide; else osk_show; fi
+      write_state
+      ;;
+    "osk restyle") osk_restyle; write_state ;;
+    "refresh "*) write_state ;;
+  esac
+  return 0
+}
+
+handle_event() {
+  local kind arg
+  read -r kind arg <<<"$1"
+  case $kind in
+    orient) on_orientation "$arg" ;;
+    usb) on_usb ;;
+    hypr) on_hypr "$arg" ;;
+    sleep) on_sleep "$arg" ;;
+    cmd)
+      local -a words
+      read -ra words <<<"$arg" # split into words without glob expansion: "rotate 1" -> rotate 1
+      on_command "${words[@]}"
+      ;;
+  esac
+}
+
+apply_pending() {
+  local now
+  now=$(now_ms)
+  if [[ -n $PENDING ]] && ((now - PENDING_AT >= $(cfg_int debounce_ms 400))); then
+    local t
+    t=$(transform_for "$PENDING")
+    log "orientation $PENDING -> transform $t"
+    PENDING=""
+    [[ $MODE == tablet && $LOCK != true ]] && rotate_to "$t"
+    write_state
+  fi
+  if [[ -n $RESUME_AT ]] && ((now - RESUME_AT >= $(cfg_int resume_delay_ms 2000))); then
+    RESUME_AT="" ASLEEP=false
+    log "awake: back to $MODE mode"
+    sensor_sync
+    [[ $MODE == tablet && $OSK_RESTORE == true ]] && osk_show
+    write_state
+    KBD_PENDING=$now # the keyboard may have come or gone while asleep
+  fi
+  if [[ -n $KBD_PENDING ]] && ((now - KBD_PENDING >= 800)); then
+    KBD_PENDING=""
+    on_usb_settled
+  fi
+}
+
+daemon_exit() {
+  # A signal that lands during `IFS= read` runs this trap with that empty IFS still in place.
+  IFS=$' \t\n'
+  local name
+  for name in sensor usb hypr sleep; do stop_reader "$name"; done
+  inhibit_release
+  restore_live
+  rm -f "$DAEMON_PID" "$FIFO"
+}
+
+cmd_daemon() {
+  local readers=1 pid line rc
+  [[ ${1:-} == --no-readers ]] && readers=0
+  load_config
+  cfg_bool enabled || { log "Tablet mode is disabled ($CONF)"; exit 0; }
+  mkdir -p "$RUN_DIR" "$READERS_DIR"
+  pid=$(daemon_running) && die "Already running (pid $pid)"
+  echo $$ >"$DAEMON_PID"
+  # Left over from a daemon that died hard: stop what's still ours, then forget them all.
+  local stale
+  for stale in sensor usb hypr sleep; do ((DRYRUN)) || stop_reader "$stale"; done
+  inhibit_release
+  rm -f "$READERS_DIR"/* "$INHIBITOR"
+  rm -f "$FIFO"
+  mkfifo -m 600 "$FIFO" || die "Can't create $FIFO"
+  # Read-write, so the FIFO never reports end-of-file between writers.
+  exec 3<>"$FIFO"
+  trap daemon_exit EXIT
+  trap 'exit 0' TERM INT HUP
+
+  MODE=laptop SOURCE=start LOCK=false ORIENT="" OSK_VISIBLE=false TWEAKS_ON=false
+  PENDING="" PENDING_AT=0 KBD_PENDING="" ASLEEP=false RESUME_AT="" OSK_RESTORE=false
+  KBD=$(keyboard_state)
+  TRANSFORM=$(current_transform)
+
+  if ((readers)); then
+    start_reader usb
+    start_reader hypr
+    start_reader sleep
+  fi
+  inhibit_take
+  if [[ $KBD == detached ]]; then enter_tablet keyboard; else write_state; fi
+
+  while true; do
+    if [[ -n $PENDING || -n $KBD_PENDING || -n $RESUME_AT ]]; then
+      IFS= read -r -t 0.1 line <&3
+      rc=$?
+    else
+      IFS= read -r line <&3
+      rc=$?
+    fi
+    ((rc == 0)) && handle_event "$line"
+    apply_pending
+  done
+}
+
+# Undo every live change this plugin made. Safe to run any number of times.
+restore_live() {
+  local name
+  for name in sensor usb hypr sleep; do stop_reader "$name"; done
+  inhibit_release
+  osk_stop
+  if hypr_available; then
+    unrotate
+    tweaks_restore
+  elif [[ -f $ROTATED || -f $TOUCH_MAPPED || -f $TWEAKS ]]; then
+    log "Hyprland isn't reachable; its changes end with this session anyway"
+    rm -f "$ROTATED" "$TOUCH_MAPPED" "$TWEAKS"
+  fi
+  rm -f "$STATE"
+}
+
+# --- commands ---------------------------------------------------------------------------
+
+require_enabled() {
+  load_config
+  cfg_bool enabled || die "Tablet mode is disabled. Turn it back on with: tablet-mode enable"
+}
+
+send() {
+  daemon_running >/dev/null || die "The tablet-mode service isn't running (try: tablet-mode doctor)"
+  timeout 2 bash -c 'printf "%s\n" "$1" >"$2"' _ "$*" "$FIFO" || die "The tablet-mode service didn't respond"
+}
+
+cmd_mode() {
+  require_enabled
+  send "cmd $1"
+}
+
+cmd_rotate() {
+  require_enabled
+  local t
+  case ${1:-} in
+    normal | 0) t=0 ;;
+    90) t=1 ;;
+    180 | inverted) t=2 ;;
+    270) t=3 ;;
+    *) die "Usage: tablet-mode rotate normal|90|180|270" ;;
+  esac
+  send "cmd rotate $t"
+}
+
+cmd_lock() {
+  require_enabled
+  case ${1:-toggle} in
+    on | off | toggle) send "cmd lock ${1:-toggle}" ;;
+    *) die "Usage: tablet-mode lock on|off|toggle" ;;
+  esac
+}
+
+cmd_osk() {
+  load_config
+  case ${1:-toggle} in
+    restyle) cfg_bool enabled && daemon_running >/dev/null && send "cmd osk restyle"; return 0 ;;
+    show | hide | toggle) require_enabled; send "cmd osk ${1:-toggle}" ;;
+    *) die "Usage: tablet-mode osk show|hide|toggle" ;;
+  esac
+}
+
+packages_missing() {
+  command -v monitor-sensor >/dev/null || echo iio-sensor-proxy
+  command -v "$OSK_BIN" >/dev/null || echo wvkbd
+}
+
+# One word for the bar card: disabled, install, enable, stopped or ready.
+setup_state() {
+  cfg_bool enabled || { echo disabled; return; }
+  [[ -z $(packages_missing) ]] || { echo install; return; }
+  systemctl --user is-enabled --quiet "$UNIT" 2>/dev/null || { echo enable; return; }
+  systemctl --user is-active --quiet "$UNIT" 2>/dev/null || { echo stopped; return; }
+  echo ready
+}
+
+status_json() {
+  local live='{}' enabled=false sensor=false
+  daemon_running >/dev/null && [[ -f $STATE ]] && live=$(cat "$STATE")
+  cfg_bool enabled && enabled=true
+  has_accelerometer && sensor=true
+  jq -c --argjson enabled "$enabled" --arg setup "$(setup_state)" --arg version "$VERSION" \
+    --argjson sensor "$sensor" --arg keyboard "$(keyboard_state)" --arg missing "$(packages_missing | xargs)" \
+    '{version: $version, enabled: $enabled, setup: $setup, missing: $missing, sensor: $sensor,
+      running: false, mode: "laptop", source: "", keyboard: $keyboard, lock: false,
+      orientation: "", transform: 0, osk: false, tweaks: false} + .' <<<"$live"
+}
+
+cmd_status() {
+  local json=0 is="" st
+  while (($#)); do
+    case $1 in
+      --json) json=1 ;;
+      --is) is=${2:-} && shift ;;
+      *) die "Unknown option $1" ;;
+    esac
+    shift
+  done
+  load_config
+  st=$(status_json)
+  if [[ -n $is ]]; then
+    case $is in
+      enabled) jq -e '.enabled' <<<"$st" >/dev/null ;;
+      running) jq -e '.running' <<<"$st" >/dev/null ;;
+      tablet) jq -e '.mode == "tablet"' <<<"$st" >/dev/null ;;
+      osk) jq -e '.osk' <<<"$st" >/dev/null ;;
+      lock) jq -e '.lock' <<<"$st" >/dev/null ;;
+      *) die "Usage: tablet-mode status --is enabled|running|tablet|osk|lock" ;;
+    esac
+    return
+  fi
+  ((json)) && { echo "$st"; return; }
+  jq -r '"Tablet mode \(.version)",
+    "  plugin       \(if .enabled then "enabled" else "disabled (plain Omarchy)" end)",
+    "  setup        \(.setup)\(if .missing != "" then " (missing: \(.missing))" else "" end)",
+    "  service      \(if .running then "running" else "not running" end)",
+    "  mode         \(.mode)\(if .source != "" then " (\(.source))" else "" end)",
+    "  keyboard     \(.keyboard)",
+    "  rotation     \(["normal", "90°", "180°", "270°"][.transform] // .transform)\(if .lock then ", locked" else "" end)\(if .orientation != "" then " (sensor: \(.orientation))" else "" end)",
+    "  on-screen kb \(if .osk then "shown" else "hidden" end)",
+    "  touch tweaks \(if .tweaks then "on" else "off" end)"' <<<"$st"
+}
+
+# Builds an AUR package from a checkout you've just read: the recipe shown is exactly the one
+# makepkg builds (no second download), and makepkg checks the upstream source's checksums.
+aur_install_reviewed() {
+  local pkg=$1 dir files
+  command -v git >/dev/null && command -v makepkg >/dev/null || die "Needs git and base-devel (makepkg) to build $pkg"
+  dir=$(mktemp -d) || die "Can't create a build folder"
+  git clone --quiet --depth 1 "https://aur.archlinux.org/$pkg.git" "$dir/$pkg" || { rm -rf "$dir"; die "Couldn't fetch $pkg from the AUR"; }
+  step "$pkg's build recipe (from the AUR; this exact file is what gets built)"
+  files=$(cd "$dir/$pkg" && git ls-files | grep -vE '^(PKGBUILD|\.SRCINFO|\.gitignore)$' | xargs)
+  sed 's/^/  | /' "$dir/$pkg/PKGBUILD"
+  [[ -z $files ]] || note "Other files in the recipe, also used by the build: $files (in $dir/$pkg)"
+  echo
+  if ! confirm "Build and install $pkg from this recipe?"; then
+    rm -rf "$dir"
+    die "Not installed"
+  fi
+  (cd "$dir/$pkg" && makepkg --syncdeps --install --needed) || { rm -rf "$dir"; die "Building $pkg failed"; }
+  rm -rf "$dir"
+}
+
+cmd_install() {
+  while (($#)); do case $1 in -y | --yes) YES=1 ;; *) die "Unknown option $1" ;; esac; shift; done
+  local missing
+  missing=$(packages_missing | xargs)
+  step "Install"
+  if [[ -z $missing ]]; then
+    ok "iio-sensor-proxy and wvkbd are installed"
+    echo
+    echo "Next: tablet-mode enable"
+    return 0
+  fi
+  echo "  This installs (it asks for your password):"
+  [[ $missing == *iio-sensor-proxy* ]] && echo "   - iio-sensor-proxy, from the Arch repos: reads the accelerometer"
+  [[ $missing == *wvkbd* ]] && echo "   - wvkbd, from the AUR: the on-screen keyboard. You'll see its full build recipe first."
+  confirm "Continue?" || exit 1
+  if [[ $missing == *iio-sensor-proxy* ]]; then
+    if command -v omarchy-pkg-add >/dev/null; then omarchy-pkg-add iio-sensor-proxy; else sudo pacman -S --needed iio-sensor-proxy; fi
+  fi
+  if [[ $missing == *wvkbd* ]]; then
+    aur_install_reviewed wvkbd
+  fi
+  missing=$(packages_missing | xargs)
+  [[ -z $missing ]] || die "Still missing: $missing"
+  ok "Installed"
+  echo
+  echo "Next: tablet-mode enable"
+}
+
+install_unit() {
+  mkdir -p "$(dirname "$UNIT_FILE")"
+  sed "s|@BIN@|$SELF|g" "$ROOT/systemd/$UNIT" >"$UNIT_FILE.tmp" && mv -f "$UNIT_FILE.tmp" "$UNIT_FILE"
+}
+
+install_hook() {
+  mkdir -p "$(dirname "$HOOK")"
+  cat >"$HOOK" <<EOF
+#!/bin/bash
+# Restyles the tablet-mode on-screen keyboard for the new theme ($PLUGIN_ID).
+[[ -x "$SELF" ]] && "$SELF" osk restyle >/dev/null 2>&1
+exit 0
+EOF
+}
+
+# menu_block [","]: the entries, optionally led by a lone comma for an entry before them
+# that has none. The comma sits inside the markers, so removing the block removes it too.
+menu_block() {
+  local cli=$LINK
+  echo "  $MENU_BEGIN"
+  [[ -n ${1:-} ]] && echo "  ,"
+  cat <<EOF
+  "trigger.toggle.tablet-mode": {"icon":"󰓶","label":"Tablet Mode","when":"$cli status --is enabled","checked":"$cli status --is tablet","action":"$cli toggle"},
+  "trigger.toggle.onscreen-keyboard": {"icon":"󰌌","label":"On-screen Keyboard","when":"$cli status --is running","checked":"$cli status --is osk","action":"$cli osk toggle"},
+  "trigger.toggle.rotation-lock": {"icon":"󰑸","label":"Rotation Lock","when":"$cli status --is running","checked":"$cli status --is lock","action":"$cli lock toggle"},
+  "trigger.toggle.tablet-mode-plugin": {"icon":"󰐥","label":"Tablet Mode Plugin","checked":"$cli status --is enabled","action":"$cli plugin-toggle"},
+  $MENU_END
+EOF
+}
+
+# Removes our block, but only when it's intact: exactly one begin and one end marker, in
+# that order. Otherwise sed's range would run to the end of the user's file.
+menu_remove() {
+  [[ -f $MENU ]] || return 0
+  local begins ends
+  begins=$(grep -n '^[[:space:]]*// >>> tablet-mode:' "$MENU" | cut -d: -f1)
+  ends=$(grep -n '^[[:space:]]*// <<< tablet-mode' "$MENU" | cut -d: -f1)
+  [[ -z $begins && -z $ends ]] && return 0
+  if [[ $begins =~ ^[0-9]+$ && $ends =~ ^[0-9]+$ ]] && ((begins < ends)); then
+    sed -i "${begins},${ends}d" "$MENU"
+    return 0
+  fi
+  note "The tablet-mode block in $MENU is damaged (markers missing or out of order); fix or remove it by hand"
+  return 1
+}
+
+# Strict check of a JSONC file (comments and trailing commas allowed), aware of strings,
+# so "https://..." inside a value isn't mistaken for a comment.
+jsonc_ok() {
+  command -v python3 >/dev/null || return 2
+  python3 - "$1" <<'PY'
+import json, re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+out, i, n = [], 0, len(src)
+while i < n:
+    c = src[i]
+    if c == '"':
+        j = i + 1
+        while j < n and src[j] != '"':
+            j += 2 if src[j] == "\\" else 1
+        out.append(src[i:j + 1]); i = j + 1
+    elif src.startswith("//", i):
+        while i < n and src[i] != "\n": i += 1
+    elif src.startswith("/*", i):
+        i = src.find("*/", i + 2); i = n if i < 0 else i + 2
+    else:
+        out.append(c); i += 1
+json.loads(re.sub(r",(\s*[}\]])", r"\1", "".join(out)))
+PY
+}
+
+# Adds the entries just before the file's closing brace without editing any of the user's
+# lines. If the entry before ours lacks a trailing comma, a lone "," line goes first (JSONC
+# allows whitespace and comments before a comma). The result must parse, or nothing changes.
+menu_add() {
+  menu_remove || { note "Menu entries skipped"; return 0; }
+  if [[ ! -f $MENU ]]; then
+    mkdir -p "$(dirname "$MENU")"
+    printf '{\n}\n' >"$MENU"
+  fi
+  jsonc_ok "$MENU"
+  case $? in
+    1) note "$MENU doesn't parse as it is; menu entries skipped"; return 0 ;;
+    2) note "python3 is needed to edit $MENU safely; menu entries skipped"; return 0 ;;
+  esac
+  [[ -f $MENU.tablet-mode.bak ]] || cp -a "$MENU" "$MENU.tablet-mode.bak"
+  local last tmp comma
+  last=$(grep -n '^[[:space:]]*}[[:space:]]*$' "$MENU" | tail -1 | cut -d: -f1)
+  [[ -n $last ]] || { note "Couldn't find the end of $MENU; menu entries skipped"; return 0; }
+  tmp=$(mktemp)
+  for comma in "" ","; do
+    { head -n $((last - 1)) "$MENU"; menu_block "$comma"; tail -n +"$last" "$MENU"; } >"$tmp"
+    if jsonc_ok "$tmp" 2>/dev/null; then
+      cat "$tmp" >"$MENU"
+      rm -f "$tmp"
+      return 0
+    fi
+  done
+  rm -f "$tmp"
+  note "Couldn't add the menu entries to $MENU without breaking it; skipped"
+}
+
+plugin_on_bar() { grep -qF "\"$PLUGIN_ID\"" "$SHELL_JSON" 2>/dev/null; }
+
+# The script's path and ~/.local/bin go into a unit file, a hook script and JSON menu
+# entries, so refuse paths with characters that would need escaping in any of them.
+require_plain_paths() {
+  local path
+  for path in "$SELF" "$LINK"; do
+    [[ $path =~ ^[A-Za-z0-9._/+-]+$ ]] || die "Unsupported characters in $path; install the plugin under a plain path"
+  done
+}
+
+cmd_enable() {
+  require_plain_paths
+  load_config
+  [[ -f $CONF ]] || write_default_config
+  set_config enabled true
+  step "Enable tablet mode"
+  local missing
+  missing=$(packages_missing | xargs)
+  [[ -z $missing ]] || note "Not installed yet: $missing (run: tablet-mode install); the service skips what's missing"
+  install_unit
+  mkdir -p "$(dirname "$LINK")"
+  [[ -e $LINK && ! -L $LINK ]] || ln -sfn "$SELF" "$LINK"
+  install_hook
+  menu_add
+  systemctl --user daemon-reload
+  systemctl --user enable "$UNIT" >/dev/null 2>&1
+  systemctl --user restart "$UNIT" || die "The service didn't start (journalctl --user -u $UNIT)"
+  ok "Service running ($UNIT)"
+  ok "Menu entries under Trigger > Toggle; theme hook installed"
+  if ! plugin_on_bar && command -v omarchy-plugin-enable >/dev/null; then
+    omarchy-plugin-enable "$PLUGIN_ID" --section right >/dev/null 2>&1 && ok "Bar icon added"
+  fi
+  [[ $(keyboard_state) == unknown ]] && note "Keyboard detection is off (keyboard=${CFG[keyboard]}); use the toggle"
+  refresh_widget
+}
+
+cmd_disable() {
+  local full=0
+  [[ ${1:-} == --full ]] && full=1
+  load_config
+  set_config enabled false
+  step "Disable tablet mode"
+  systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
+  restore_live
+  ok "Plain Omarchy again: landscape, no on-screen keyboard, Hyprland's own settings back"
+  ok "Nothing starts at login"
+  if ((full)); then
+    menu_remove
+    rm -f "$HOOK"
+    if plugin_on_bar && command -v omarchy-plugin-disable >/dev/null; then
+      omarchy-plugin-disable "$PLUGIN_ID" >/dev/null 2>&1 || true
+    fi
+    ok "Menu entries, theme hook and bar icon removed"
+    echo
+    echo "Bring it all back with: tablet-mode enable"
+  else
+    echo
+    echo "Turn it back on with: tablet-mode enable (or from the bar icon or the menu)"
+  fi
+  refresh_widget
+}
+
+cmd_plugin_toggle() {
+  load_config
+  if cfg_bool enabled; then cmd_disable; else cmd_enable; fi
+}
+
+cmd_restore() {
+  daemon_running >/dev/null && die "The service is running; use: tablet-mode off, or tablet-mode disable"
+  restore_live
+  [[ ${1:-} == --quiet ]] || ok "Live changes undone"
+}
+
+cmd_doctor() {
+  local full=0 fails=0
+  [[ ${1:-} == --full ]] && full=1
+  load_config
+  check() {
+    if "${@:2}" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fails=$((fails + 1)); fi
+  }
+  no_proc() { ! pgrep -u "$(id -u)" -x "$1" >/dev/null; }
+  if cfg_bool enabled; then
+    step "Tablet mode is enabled"
+    check "Accelerometer present" has_accelerometer
+    check "iio-sensor-proxy installed" command -v monitor-sensor
+    check "wvkbd installed" command -v "$OSK_BIN"
+    check "Built-in display found ($(internal_output 2>/dev/null || echo none))" internal_output
+    check "Touchscreen found" test -n "$(touch_devices 2>/dev/null)"
+    check "Service enabled" systemctl --user is-enabled --quiet "$UNIT"
+    check "Service running" systemctl --user is-active --quiet "$UNIT"
+    note "Keyboard: $(keyboard_state) (${CFG[keyboard]})"
+  else
+    step "Tablet mode is disabled: checking for plain Omarchy"
+    check "Service not running" eval '! systemctl --user is-active --quiet "$UNIT" && ! daemon_running >/dev/null'
+    check "Service not enabled at login" eval '! systemctl --user is-enabled --quiet "$UNIT"'
+    check "No accelerometer client (monitor-sensor)" no_proc monitor-sensor
+    check "No on-screen keyboard running" no_proc "$OSK_BIN"
+    check "Built-in display not rotated" test "$(current_transform)" = 0
+    check "No live changes recorded (rotation, touch mapping, tweaks)" eval '[[ ! -e $ROTATED && ! -e $TOUCH_MAPPED && ! -e $TWEAKS ]]'
+    if ((full)); then
+      check "No menu entries" eval '! grep -q "// >>> tablet-mode:" "$MENU" 2>/dev/null'
+      check "No theme hook" test ! -e "$HOOK"
+      check "Not on the bar" eval '! plugin_on_bar'
+    fi
+  fi
+  echo
+  if ((fails)); then echo "$fails check(s) failed"; return 1; fi
+  echo "All good"
+}
+
+read_orientation() {
+  local args=()
+  monitor-sensor --help 2>&1 | grep -q -- --accel && args=(--accel)
+  timeout 3 stdbuf -oL monitor-sensor "${args[@]}" 2>/dev/null |
+    sed -nE 's/.*(orientation changed: |orientation: )(normal|left-up|right-up|bottom-up)\b.*/\2/p' | tail -1 | grep .
+}
+
+cmd_calibrate() {
+  load_config
+  command -v monitor-sensor >/dev/null || die "Needs iio-sensor-proxy (tablet-mode install)"
+  hypr_available || die "Run this inside the Hyprland session"
+  mkdir -p "$RUN_DIR"
+  local r1 r2 off t mirror
+  # Global, not local: the EXIT trap runs after this function has returned.
+  CALIBRATE_RESTART=0
+  if systemctl --user is-active --quiet "$UNIT"; then
+    CALIBRATE_RESTART=1
+    systemctl --user stop "$UNIT"
+  fi
+  trap 'unrotate; ((CALIBRATE_RESTART)) && systemctl --user start "$UNIT"' EXIT
+
+  step "Calibrate auto-rotation"
+  echo "  Detach the keyboard if you can; it's easier to turn the screen without it."
+  echo
+  echo "  1. Hold it in landscape, the normal way up (as when the keyboard is attached)."
+  read -r -p "     Press Enter when it's steady... " _
+  r1=$(read_orientation) || die "No reading from the accelerometer"
+  off=$(((4 - $(orient_index "$r1")) % 4))
+  echo "     The sensor calls this \"$r1\"."
+  echo
+  echo "  2. Turn it a quarter turn into portrait (either way)."
+  read -r -p "     Press Enter when it's steady... " _
+  r2=$(read_orientation) || die "No reading from the accelerometer"
+  t=$((($(orient_index "$r2") + off) % 4))
+  ((t % 2 == 1)) || die "That still reads as landscape (\"$r2\"); turn it a full quarter turn and run calibrate again"
+  rotate_to "$t"
+  mirror=false
+  if ! confirm "     Is the picture the right way up now?"; then
+    rotate_to $((4 - t))
+    confirm "     And now?" || die "Couldn't work out the mapping; nothing was saved"
+    mirror=true
+  fi
+  set_config orientation_offset "$off"
+  set_config orientation_mirror "$mirror"
+  ok "Saved: orientation_offset=$off, orientation_mirror=$mirror ($CONF)"
+}
+
+cmd_uninstall() {
+  local packages=0
+  [[ ${1:-} == --packages ]] && packages=1
+  cmd_disable --full
+  step "Uninstall"
+  rm -f "$UNIT_FILE"
+  systemctl --user daemon-reload
+  [[ -L $LINK && $(readlink -f "$LINK") == "$SELF" ]] && rm -f "$LINK"
+  rm -rf "$RUN_DIR"
+  rm -f "$MENU.tablet-mode.bak"
+  ok "Service, ~/.local/bin/tablet-mode and the menu backup removed"
+  if [[ -f $CONF ]] && confirm "Delete your settings ($CONF)?"; then rm -f "$CONF" && ok "Settings deleted"; fi
+  if ((packages)) && confirm "Also uninstall iio-sensor-proxy and wvkbd (sudo)?"; then
+    local installed
+    installed=$(pacman -Qq iio-sensor-proxy wvkbd 2>/dev/null | xargs)
+    [[ -z $installed ]] || sudo pacman -Rns $installed
+  fi
+  echo
+  echo "The plugin's files are still in $ROOT; remove them with: omarchy plugin remove $PLUGIN_ID"
+}
+
+cmd_help() {
+  cat <<EOF
+tablet-mode $VERSION - tablet mode for Omarchy on detachables
+
+Detaching the keyboard turns on auto-rotation, shows the on-screen keyboard
+(wvkbd) and applies touch tweaks; attaching it puts everything back.
+
+Setup
+  install               iio-sensor-proxy (repos) + wvkbd (AUR); asks for your password
+  enable                Start the service, add the menu entries and the bar icon
+  disable [--full]      Plain Omarchy: stop everything and undo every change.
+                        --full also removes the menu entries and the bar icon
+  uninstall [--packages]
+                        disable --full, then remove the service (and the packages)
+  calibrate             Teach it which way the accelerometer is mounted
+  doctor [--full]       Check the setup, or (when disabled) that nothing is left over
+
+Use
+  status [--json]       What's going on (--is enabled|running|tablet|osk|lock for scripts)
+  on | off | toggle     Tablet mode by hand (until the keyboard is next attached/detached)
+  rotate normal|90|180|270
+                        Turn the screen and lock rotation
+  lock on|off|toggle    Rotation lock (tablet mode only follows the sensor when unlocked)
+  osk show|hide|toggle  The on-screen keyboard
+  restore               Undo live changes (the service does this itself when it stops)
+
+Settings: $CONF
+EOF
+}
+
+# Sourced by the tests for its functions; nothing runs.
+[[ ${BASH_SOURCE[0]} != "$0" ]] && return 0
+
+case ${1:-help} in
+  install | enable | disable | restore | status | doctor | calibrate | daemon | uninstall | help) cmd="cmd_$1" && shift && "$cmd" "$@" ;;
+  on | off | toggle) cmd_mode "$1" ;;
+  rotate | lock | osk) cmd="cmd_$1" && shift && "$cmd" "$@" ;;
+  plugin-toggle) cmd_plugin_toggle ;;
+  setup-state) load_config && setup_state ;;
+  enabled) load_config && cfg_bool enabled ;;
+  send) shift && send "$*" ;;
+  _sensor-reader) cmd__sensor_reader ;;
+  _usb-reader) cmd__usb_reader ;;
+  _hypr-reader) cmd__hypr_reader ;;
+  _sleep-reader) cmd__sleep_reader ;;
+  -h | --help) cmd_help ;;
+  -v | --version) echo "$VERSION" ;;
+  *) cmd_help && exit 1 ;;
+esac

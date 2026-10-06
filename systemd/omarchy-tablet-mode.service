@@ -1,0 +1,21 @@
+[Unit]
+Description=Tablet mode for Omarchy (auto-rotation, on-screen keyboard, keyboard-detach detection)
+Documentation=https://github.com/AlanRoman117/omarchy-tablet-mode-asus-rog-flow-z13
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionEnvironment=HYPRLAND_INSTANCE_SIGNATURE
+
+[Service]
+Type=simple
+# `tablet-mode disable` sets enabled=false; then nothing runs, even if the unit is started.
+ExecCondition=@BIN@ enabled
+ExecStart=@BIN@ daemon
+# Whatever ends the daemon (stop, crash, kill -9), the screen goes back to landscape,
+# the on-screen keyboard closes and Hyprland's own settings return.
+ExecStopPost=@BIN@ restore --quiet
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target
