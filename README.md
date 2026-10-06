@@ -48,6 +48,8 @@ Omarchy's plugin installer never runs code or sudo, which is why setup is a step
 
 ## The card
 
+<img src="docs/screenshots/card.png" width="360" align="right" alt="The Tablet Mode card open under its bar icon: switches for tablet mode, the on-screen keyboard and rotation lock, buttons to turn the screen to 0, 90, 180 or 270 degrees, and Calibrate, Check and Turn off buttons">
+
 Tap the bar icon:
 
 - **Tablet mode**, **On-screen keyboard** and **Rotation lock** switches.
@@ -55,6 +57,8 @@ Tap the bar icon:
 - **Calibrate**, **Check** (runs `doctor`) and **Turn off**.
 
 The same switches are in the Omarchy menu under **Trigger → Toggle**.
+
+<br clear="right">
 
 ## Commands
 

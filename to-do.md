@@ -76,6 +76,7 @@ Minor items fixed too: no glob expansion of commands, the sleep signal is matche
 
 ## Later
 
+- **Next (the user's plan, 2026-10-05):** wait for replies on omacom/omarchy discussion #14341. Any follow-up work depends on them, then prepare the plugin submission.
 - Going public (decided by the user):
   - The commit author email (alan.roman117@gmail.com) is fine to publish; the user confirmed this 2026-10-05, so no history rewrite is needed.
   - Optionally trim this file and CLAUDE.md, which are internal notes.
