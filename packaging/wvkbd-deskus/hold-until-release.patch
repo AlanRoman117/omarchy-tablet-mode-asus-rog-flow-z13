@@ -1,5 +1,5 @@
---- keyboard.c
-+++ keyboard.c
+--- a/keyboard.c
++++ b/keyboard.c
 @@ -396,9 +396,10 @@
              kb->last_swipe = intersect_key;
              kbd_draw_key(kb, kb->last_swipe, Swipe);
@@ -13,3 +13,29 @@
  
      kbd_clear_last_popup(kb);
  }
+--- a/main.c
++++ b/main.c
+@@ -305,6 +305,11 @@
+ void
+ wl_touch_cancel(void *data, struct wl_touch *wl_touch)
+ {
++    // omarchy-tablet-mode: a cancelled touch never gets its up event, so let go of
++    // a key held by it (held keys no longer release on motion).
++    if (layer_surface_configured && popup_xdg_surface_configured) {
++        kbd_release_key(&keyboard, 0);
++    }
+ }
+ 
+ void
+@@ -723,6 +728,11 @@
+         return;
+     }
+ 
++    // omarchy-tablet-mode: let go of a held key while the surface still exists. A
++    // touch that ends after this lands on no surface (resizes and rotation go
++    // through hide/show too), so its release would otherwise be lost.
++    kbd_release_key(&keyboard, 0);
++
+     if (wfs_draw_surf) {
+         wp_fractional_scale_v1_destroy(wfs_draw_surf);
+         wfs_draw_surf = NULL;

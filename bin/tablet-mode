@@ -128,7 +128,7 @@ EOF
 set_config() {
   [[ -f $CONF ]] || write_default_config
   if grep -qE "^[[:space:]]*$1[[:space:]]*=" "$CONF"; then
-    sed -i -E "s|^[[:space:]]*$1[[:space:]]*=.*|$1=$2|" "$CONF"
+    sed -i --follow-symlinks -E "s|^[[:space:]]*$1[[:space:]]*=.*|$1=$2|" "$CONF"
   else
     printf '%s=%s\n' "$1" "$2" >>"$CONF"
   fi
@@ -410,7 +410,11 @@ osk_stop() {
   OSK_VISIBLE=false
   if ((DRYRUN)); then [[ -f $OSK_PID ]] && action "osk stop"; rm -f "$OSK_PID"; return 0; fi
   local pid
-  pid=$(osk_running) && kill "$pid" 2>/dev/null
+  if pid=$(osk_running); then
+    # Hide first: wvkbd lets go of a held key when it hides (our patch), but not when killed.
+    kill -USR1 "$pid" 2>/dev/null && sleep 0.15
+    kill "$pid" 2>/dev/null
+  fi
   rm -f "$OSK_PID"
 }
 
@@ -848,7 +852,9 @@ cmd_daemon() {
     start_reader hypr
     start_reader sleep
   fi
-  inhibit_take
+  # The delay lock is only useful while something listens for sleep; without the listener
+  # it would just make every suspend wait out InhibitDelayMaxSec.
+  if ((DRYRUN)) || reader_running sleep; then inhibit_take; else log "No sleep listener; not taking the delay lock"; fi
   if [[ $KBD == detached ]]; then enter_tablet keyboard; else write_state; fi
 
   while true; do
@@ -1010,14 +1016,16 @@ build_reviewed() {
   local src=$1 pkg dir file
   pkg=$(basename "$src")
   command -v makepkg >/dev/null || die "Needs base-devel (makepkg) to build $pkg"
-  [[ -f $src/PKGBUILD ]] || die "No recipe at $src"
+  [[ -f $src/PKGBUILD && ! -L $src ]] || die "No recipe at $src"
+  # Only plain files: a symlink would be read again at build time, after you've reviewed it.
+  [[ -z $(find "$src" -mindepth 1 ! -type f -print -quit) ]] || die "The recipe at $src contains something other than plain files; refusing to build it"
   dir=$(mktemp -d) || die "Can't create a build folder"
   cp -r "$src" "$dir/$pkg"
   step "$pkg: the complete recipe that will be built"
-  for file in "$dir/$pkg"/*; do
-    echo "  ── $(basename "$file")"
-    sed 's/^/  | /' "$file"
-  done
+  while IFS= read -r file; do
+    echo "  ── ${file#"$dir/$pkg/"}"
+    cat -v "$file" | sed 's/^/  | /' # control characters shown, so nothing can hide a line
+  done < <(find "$dir/$pkg" -type f | sort)
   echo
   if ! confirm "Build and install $pkg from this recipe?"; then
     rm -rf "$dir"
@@ -1047,7 +1055,8 @@ cmd_install() {
   [[ $missing == *iio-sensor-proxy* ]] && echo "   - iio-sensor-proxy, from the Arch repos: reads the accelerometer"
   osk_outdated && echo "   - an update of wvkbd-deskus, $(osk_installed_version) -> $(osk_recipe_version):"
   [[ $missing == *wvkbd-deskus* ]] && echo "   - wvkbd-deskus: the on-screen keyboard with a US desktop layout, built from this plugin's"
-  [[ $missing == *wvkbd-deskus* ]] && echo "     recipe (wvkbd 0.20 from upstream plus a 3-line layout change). You'll see all of it first."
+  [[ $missing == *wvkbd-deskus* ]] && echo "     recipe: wvkbd 0.20 from upstream plus two small patches (US layout; held keys stay down"
+  [[ $missing == *wvkbd-deskus* ]] && echo "     until the finger lifts, released on cancel/hide). You'll see all of it first."
   confirm "Continue?" || exit 1
   if [[ $missing == *iio-sensor-proxy* ]]; then
     if command -v omarchy-pkg-add >/dev/null; then omarchy-pkg-add iio-sensor-proxy; else sudo pacman -S --needed iio-sensor-proxy; fi

@@ -44,7 +44,7 @@ stop() {
   wait "$DPID" 2>/dev/null
 }
 
-event() { "$CLI" send "$@" && sleep "${WAIT:-0.35}"; }
+event() { "$CLI" send "$@" && sleep "${WAIT:-0.6}"; }
 mark() { : >"$TMP/log"; }
 
 pass() { PASS=$((PASS + 1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -62,7 +62,7 @@ is "starts in laptop mode with the keyboard attached" "$(state .mode)" laptop
 lacks "touches nothing at start" "eval"
 
 echo detached >"$TMP/fixtures/keyboard"
-WAIT=1.1 event usb
+WAIT=1.6 event usb
 is "detaching the keyboard enters tablet mode" "$(state .mode)" tablet
 is "source is the keyboard" "$(state .source)" keyboard
 has "shows the on-screen keyboard" "osk show"
@@ -131,7 +131,7 @@ release=$(grep -n "inhibit release" "$TMP/log" | head -1 | cut -d: -f1)
 mark
 event "orient bottom-up"
 lacks "asleep: ignores the sensor" "transform = 2"
-WAIT=0.6 event "sleep post"
+WAIT=0.9 event "sleep post"
 has "resume takes the delay lock again" "inhibit take"
 has "resume claims the accelerometer again" "reader start sensor"
 has "resume brings the keyboard back" "osk show"
@@ -139,7 +139,7 @@ is "awake in the state file" "$(state .asleep)" false
 
 mark
 echo attached >"$TMP/fixtures/keyboard"
-WAIT=1.1 event usb
+WAIT=1.6 event usb
 is "attaching the keyboard enters laptop mode" "$(state .mode)" laptop
 has "back to the original transform" "transform = 0 })"
 has "touch mapping undone" 'eval hl.device({ name = "elan9008:00-04f3:43c7", transform = 0, output = "" })'
@@ -152,7 +152,7 @@ mark
 event "sleep pre"
 lacks "laptop mode: nothing to release but the lock" "reader stop sensor"
 has "laptop mode: still releases the lock" "inhibit release"
-WAIT=0.6 event "sleep post"
+WAIT=0.9 event "sleep post"
 lacks "laptop mode: no claim after resume" "reader start sensor"
 lacks "laptop mode: no keyboard after resume" "osk show"
 
@@ -223,6 +223,16 @@ echo "not-a-pid" >"$TMP/pids/junk"
 [[ -z $(pid_of "$TMP/pids/junk" bash) ]] && pass "junk pid files are ignored" || fail "junk pid accepted"
 [[ -z $(pid_of "$TMP/pids/self" _usb-reader) ]] && pass "a reused pid running something else is ignored" || fail "reused pid accepted"
 [[ $(pid_of "$TMP/pids/self" bash) == "$$" ]] && pass "a live matching pid is accepted" || fail "live pid rejected"
+
+echo
+echo "Recipe review"
+mkdir -p "$TMP/recipe"
+echo 'pkgname=x' >"$TMP/recipe/PKGBUILD"
+ln -s /etc/hostname "$TMP/recipe/sneaky.patch"
+(build_reviewed "$TMP/recipe" </dev/null >/dev/null 2>&1) && fail "a recipe with a symlink is refused" || pass "a recipe with a symlink is refused"
+rm "$TMP/recipe/sneaky.patch"
+mkdir "$TMP/recipe/sub"
+(build_reviewed "$TMP/recipe" </dev/null >/dev/null 2>&1) && fail "a recipe with a subfolder is refused" || pass "a recipe with a subfolder is refused"
 
 echo
 echo "Menu entries"

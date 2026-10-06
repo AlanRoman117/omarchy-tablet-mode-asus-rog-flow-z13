@@ -4,6 +4,13 @@ Take the keyboard off a detachable and Omarchy turns into a tablet. The screen f
 
 **Tested so far on one machine only: ASUS ROG Flow Z13 (GZ302EA), Omarchy 4.0.4, Hyprland 0.56.2.** Other detachables and convertibles should work after setting their keyboard's USB id and running `calibrate`.
 
+<p align="center">
+  <img src="docs/screenshots/tablet-landscape.png" width="62%" alt="Tablet mode in landscape on the Osaka Jade theme: an empty workspace with the US on-screen keyboard across the bottom half and the floating keyboard button just above it">
+  <img src="docs/screenshots/tablet-portrait.png" width="30%" alt="The same in portrait: the screen turned 90 degrees, with the on-screen keyboard and the floating keyboard button">
+</p>
+
+<p align="center"><em>Tablet mode on the Z13 with the Osaka Jade theme. The on-screen keyboard, the floating ⌨ button and the bar follow the current Omarchy theme.</em></p>
+
 ## What it does
 
 | | Keyboard detached (or toggled on) | Keyboard attached (or toggled off) |
@@ -23,13 +30,19 @@ External monitors are never rotated. Your `monitors.lua` is never edited: every 
 
 ## Install
 
-The plugin isn't published yet. For now it's installed as a local folder at `~/.config/omarchy/plugins/alanroman117.tablet-mode/`.
+```bash
+omarchy plugin add https://github.com/AlanRoman117/omarchy-tablet-mode-asus-rog-flow-z13.git --enable
+```
 
 Then click the dimmed laptop icon in the bar. The card walks you through setup:
 
-1. **Set up** opens a terminal and asks for your password. It installs `iio-sensor-proxy` from the Arch repos. Then it builds the on-screen keyboard: wvkbd 0.20 from upstream, with a US desktop layout. That's upstream's desktop layout with the Compose key moved off the home row (see `packaging/wvkbd-deskus`). It shows you the complete recipe first and asks before building. What you read is exactly what gets built, and makepkg checks the upstream source's checksum.
+1. **Set up** opens a terminal and asks for your password. It installs `iio-sensor-proxy` from the Arch repos. Then it builds the on-screen keyboard (`packaging/wvkbd-deskus`): wvkbd 0.20 from upstream with two small patches.
+   - A US desktop layout: upstream's desktop layout with the Compose key taken off the home row.
+   - Held keys stay down until your finger lifts, and are released if the touch is cancelled or the keyboard hides.
+
+   It shows you every file of the recipe and asks before building. The build runs from that same private copy (plain files only, so nothing can change after you've read it), and makepkg checks the upstream source against its pinned checksum.
 2. **Finish setup** starts the service, adds the menu entries and installs a theme hook.
-3. **Calibrate** once (on the card, or `tablet-mode calibrate`). It needs two poses, and you confirm the picture is the right way up.
+3. **Calibrate** only if the screen turns the wrong way (on the card, or `tablet-mode calibrate`). It needs two poses, and you confirm the picture is the right way up. The Z13 doesn't need it.
 
 Omarchy's plugin installer never runs code or sudo, which is why setup is a step you start yourself. From a terminal, the same steps are `tablet-mode install`, `tablet-mode enable` and `tablet-mode calibrate`. After `enable`, `tablet-mode` is on your PATH through `~/.local/bin`.
 
@@ -65,7 +78,7 @@ tablet-mode enable            # all back
 
 `disable` keeps the bar icon, dimmed, with a **Turn on** button. A menu entry (**Tablet Mode Plugin**) does the same. Packages stay installed and idle: iio-sensor-proxy only starts when something asks for the accelerometer, and wvkbd doesn't run. `tablet-mode uninstall --packages` removes them too.
 
-If the service crashes or is killed, its `ExecStopPost` runs `tablet-mode restore`. The screen is never left rotated or the keyboard left up.
+If the service crashes or is killed, its `ExecStopPost` runs `tablet-mode restore`. That's designed so the screen isn't left rotated or the keyboard left up. If Hyprland itself can't be reached at that moment, the records are dropped instead, and Hyprland's own state ends with the session.
 
 ## Settings
 
@@ -78,7 +91,9 @@ If the service crashes or is killed, its `ExecStopPost` runs `tablet-mode restor
 | `auto_rotate`, `show_keyboard`, `touch_tweaks`, `notify` | `true` | What tablet mode does |
 | `orientation_offset`, `orientation_mirror` | `0`, `false` | Set by `calibrate` |
 | `debounce_ms` | `400` | How long an orientation must hold before the screen turns |
+| `resume_delay_ms` | `2000` | How long after waking from suspend before the accelerometer and keyboard come back |
 | `gaps_in`, `gaps_out`, `border_grab` | `8`, `14`, `30` | Touch tweaks, in pixels |
+| `osk` | `auto` | On-screen keyboard: `auto` (the US build if installed), `wvkbd-deskus` or `wvkbd-mobintl` |
 | `osk_height_landscape`, `osk_height_portrait` | `420`, `420` | On-screen keyboard height (the same in both, so keys are as tall in landscape as in portrait) |
 
 After editing, run `systemctl --user restart omarchy-tablet-mode`.
@@ -105,11 +120,12 @@ After editing, run `systemctl --user restart omarchy-tablet-mode`.
 
 ## How it works
 
-`bin/tablet-mode daemon` runs as the `omarchy-tablet-mode` user service. It handles one event at a time from a FIFO, fed by three readers:
+`bin/tablet-mode daemon` runs as the `omarchy-tablet-mode` user service. It handles one event at a time from a FIFO, fed by four readers:
 
-- `monitor-sensor` for orientation;
+- `monitor-sensor` for orientation, running only while auto-rotation is active;
 - `udevadm monitor` for USB add and remove;
-- Hyprland's event socket for config reloads and monitors being added.
+- Hyprland's event socket for config reloads and monitors being added;
+- `gdbus monitor` on logind's `PrepareForSleep`, paired with a delay lock, so the accelerometer and keyboard are released before suspend.
 
 Rotations replay the panel's live mode, position and scale with the new transform (a transform-only rule resets the scale), and set each touch and pen device's transform explicitly. State goes to `$XDG_RUNTIME_DIR/omarchy-tablet-mode/state.json`, which the card watches.
 
@@ -122,4 +138,5 @@ omarchy plugin remove alanroman117.tablet-mode
 
 ## Licence
 
-MIT.
+- **The plugin** (everything except `packaging/`): MIT, see `LICENSE`.
+- **`packaging/wvkbd-deskus/`:** the two patches modify [wvkbd](https://git.sr.ht/~proycon/wvkbd), which is GPL-3.0, so they are GPL-3.0 too. The PKGBUILD only downloads and builds wvkbd's upstream source.

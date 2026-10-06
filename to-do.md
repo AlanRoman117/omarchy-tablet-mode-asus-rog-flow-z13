@@ -49,6 +49,19 @@ The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy 
 - [ ] `tablet-mode disable` while rotated → `doctor` passes; `disable --full` → `doctor --full`; `enable` brings everything back.
 - [ ] `kill -9` the daemon while rotated → `ExecStopPost` restores landscape.
 
+## Second security review (2026-10-05): fixed
+
+No high findings, and the auth boundary is intact.
+- **Medium:** the hold patch could leave keys stuck. Fixed in wvkbd-deskus 0.20-3: release on touch-cancel and in `hide()`, and `osk_stop` hides before it kills. Installed, and hold-to-dictate re-tested OK by the user.
+- **Low:**
+  - the recipe review could be fooled by symlinks (now plain files only, shown with `cat -v`);
+  - the delay lock was taken without the sleep listener (now only when it runs);
+  - documentation accuracy;
+  - licensing: the patches are GPL-3.0-only, the rest MIT, and the README says so.
+- **Info:**
+  - test timing loosened;
+  - `set_config` follows symlinks.
+
 ## Security review (2026-10-05): fixed
 
 A subagent read-only review found no high or medium issues, and the auth boundary is untouched. The six low findings are all fixed and covered by tests (92 passing):
@@ -63,5 +76,7 @@ Minor items fixed too: no glob expansion of commands, the sleep signal is matche
 
 ## Later
 
-- A private GitHub repo `AlanRoman117/omarchy-tablet-mode-asus-rog-flow-z13`, once the checks above pass. Ask first.
+- Going public (decided by the user):
+  - The commit author email (alan.roman117@gmail.com) is fine to publish; the user confirmed this 2026-10-05, so no history rewrite is needed.
+  - Optionally trim this file and CLAUDE.md, which are internal notes.
 - Touch gestures (hyprgrass), as a possible v2.
