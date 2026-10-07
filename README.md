@@ -39,6 +39,7 @@ Then click the dimmed laptop icon in the bar. The card walks you through setup:
 1. **Set up** opens a terminal and asks for your password. It installs `iio-sensor-proxy` from the Arch repos. Then it builds the on-screen keyboard (`packaging/wvkbd-deskus`): wvkbd 0.20 from upstream with two small patches.
    - A US desktop layout: upstream's desktop layout with the Compose key taken off the home row.
    - Held keys stay down until your finger lifts, and are released if the touch is cancelled or the keyboard hides.
+   - An `--output` option, so the keyboard stays on the laptop screen when you're docked.
 
    It shows you every file of the recipe and asks before building. The build runs from that same private copy (plain files only, so nothing can change after you've read it), and makepkg checks the upstream source against its pinned checksum.
 2. **Finish setup** starts the service, adds the menu entries and installs a theme hook.
@@ -82,6 +83,8 @@ tablet-mode enable            # all back
 
 `disable` keeps the bar icon, dimmed, with a **Turn on** button. A menu entry (**Tablet Mode Plugin**) does the same. Packages stay installed and idle: iio-sensor-proxy only starts when something asks for the accelerometer, and wvkbd doesn't run. `tablet-mode uninstall --packages` removes them too.
 
+Your own settings (gaps and border grab area) are recorded once, when the touch tweaks first go on. A copy of the last clean record is kept in `~/.local/state/omarchy-tablet-mode/baseline.lua`. If Hyprland ever still holds the tweak values when a new record is due, that copy is used instead, so a restore always returns your real values.
+
 If the service crashes or is killed, its `ExecStopPost` runs `tablet-mode restore`. That's designed so the screen isn't left rotated or the keyboard left up. If Hyprland itself can't be reached at that moment, the records are dropped instead, and Hyprland's own state ends with the session.
 
 ## Settings
@@ -101,6 +104,20 @@ If the service crashes or is killed, its `ExecStopPost` runs `tablet-mode restor
 | `osk_height_landscape`, `osk_height_portrait` | `420`, `420` | On-screen keyboard height (the same in both, so keys are as tall in landscape as in portrait) |
 
 After editing, run `systemctl --user restart omarchy-tablet-mode`.
+
+## Multiple monitors
+
+- **Only the laptop screen turns.** External monitors are never rotated.
+- **Desk mode.** When you're docked with the keyboard off and the laptop screen turned off, tablet mode keeps listening to the accelerometer, but there's no on-screen keyboard and no touch tweaks. They would otherwise land on your external monitor. Turn the laptop screen back on (Omarchy menu → Laptop Display) and tablet mode resumes, already the right way up, even if the tablet was turned while the screen was off. You may see landscape for a split second first: Hyprland brings the screen up as `monitors.lua` describes it, and the plugin turns it straight after, rather than editing your config.
+- **The on-screen keyboard stays on the laptop screen,** even while your external monitor has focus and while the tablet turns. The plugin's wvkbd build has an `--output` option for this (`stay-on-output.patch`). With other wvkbd builds, the plugin briefly focuses the laptop screen while the keyboard appears, then gives focus and the pointer back.
+- **The plugin never edits your layout, so check where the laptop screen sits.** Turned sideways, the laptop screen keeps its position and grows taller and narrower. If that would overlap another monitor, rotation is skipped and a notification tells you which one.
+  - **Fine:** the laptop screen *below* the external monitor (portrait grows downward, into free space).
+  - **Overlap:** an external monitor directly *below* the laptop screen.
+
+  Rearrange them in `~/.config/hypr/monitors.lua`. `tablet-mode doctor` checks your current layout. Upside down (180°) never overlaps, so it's always allowed.
+- **Mirroring.** While the laptop screen is mirrored, rotation waits.
+- **If your config already rotates the laptop screen** (a `transform` on its `hl.monitor` rule, as some portrait-native panels need), auto-rotation still treats 0 as upright. Run `tablet-mode calibrate` once, and `doctor` will remind you. `restore` always puts back whatever rotation the screen had before the plugin turned it.
+- **If your config sets `transform` or `output` for the touchscreen or pen** (`hl.device` rules), the plugin sets them itself while tablet mode is on. `restore` resets them to normal until your config is next reloaded. `doctor` points out such rules.
 
 ## Limitations
 

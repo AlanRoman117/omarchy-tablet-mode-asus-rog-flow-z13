@@ -30,6 +30,7 @@ EOF
   : >"$TMP/log"
   export TABLET_MODE_DRYRUN=1 TABLET_MODE_FIXTURES="$TMP/fixtures" TABLET_MODE_RUN_DIR="$TMP/run"
   export TABLET_MODE_CONF="$TMP/tablet-mode.conf" TABLET_MODE_LOG="$TMP/log" XDG_CONFIG_HOME="$TMP/config"
+  export TABLET_MODE_BASELINE="$TMP/state/omarchy-tablet-mode/baseline.lua"
 }
 
 start() {
@@ -93,6 +94,7 @@ is "state shows the lock" "$(state .lock)" true
 mark
 event "cmd lock off"
 has "unlock claims the accelerometer again" "reader start sensor"
+event "orient left-up" # a fresh claim reports the current orientation
 
 mark
 echo 0 >"$TMP/run/fake-transform" # what a config reload does to the panel
@@ -111,7 +113,8 @@ mark
 event "hypr monitor HDMI-A-1"
 lacks "an external monitor being added changes nothing" "eval"
 event "hypr reload"
-grep -q SNAPSHOT-SENTINEL "$TMP/run/tweaks.lua" && fail "a reload retakes the snapshot" || pass "a reload retakes the snapshot"
+grep -q SNAPSHOT-SENTINEL "$TMP/run/tweaks.lua" && pass "a reload keeps the original record too" || fail "a reload retook the record (it could capture the tweaks)"
+echo "hl.config({ general = { gaps_in = { top = 5, right = 5, bottom = 5, left = 5 }, gaps_out = { top = 10, right = 10, bottom = 10, left = 10 }, extend_border_grab_area = 15, resize_on_border = false }, cursor = { hide_on_touch = true } })" >"$TMP/run/tweaks.lua"
 
 mark
 event "cmd rotate 2"
@@ -184,6 +187,111 @@ setup "enabled=false"
 is "disabled: the daemon exits at once" "$?" 0
 [[ ! -e $TMP/run/events ]] && pass "disabled: nothing created" || fail "disabled daemon left files"
 "$CLI" on 2>/dev/null && fail "disabled: on refuses" || pass "disabled: on refuses"
+
+echo
+echo "Docked: desk mode, the laptop screen coming back, keyboard placement"
+setup
+fixture() { jq "$1" "$TMP/fixtures/monitors.json" >"$TMP/m.json" && mv "$TMP/m.json" "$TMP/fixtures/monitors.json"; }
+fixture 'map(.focused = (.name == "HDMI-A-1"))'
+touch "$TMP/run/fake-panel-off"
+echo detached >"$TMP/fixtures/keyboard"
+start
+is "keyboard off with the laptop screen off: desk mode" "$(state .desk)" true
+lacks "desk mode: no on-screen keyboard" "osk show"
+lacks "desk mode: no touch tweaks" "gaps_in = 8"
+has "the notification says why" "laptop screen is off"
+has "auto-rotation stays armed" "reader start sensor"
+mark
+event "orient left-up"
+lacks "laptop screen off: nothing to turn" "hl.monitor"
+mark
+rm "$TMP/run/fake-panel-off"
+event "hypr reload" # Omarchy's Laptop Display toggle reloads the config
+has "the laptop screen comes back the way the tablet is held" "transform = 1 })"
+has "touch tweaks resume" "gaps_in = 8"
+has "the keyboard is placed on the laptop screen" 'hl.dsp.focus({ monitor = "eDP-1" })'
+has "then focus goes back to the HDMI screen" 'hl.dsp.focus({ monitor = "HDMI-A-1" })'
+is "out of desk mode" "$(state .desk)" false
+mark
+touch "$TMP/run/fake-panel-off"
+event "hypr removed eDP-1"
+is "laptop screen off again: desk mode" "$(state .desk)" true
+has "the keyboard goes away" "osk hide"
+has "the tweaks go away" "gaps_in = { top = 5"
+mark
+event "cmd lock on"
+event "orient right-up"
+echo 0 >"$TMP/run/fake-transform" # what the config reload does to the panel
+rm "$TMP/run/fake-panel-off"
+event "hypr reload"
+has "locked: the screen comes back at the locked rotation" "transform = 1 })"
+lacks "locked: the sensor is ignored" "transform = 3 })"
+stop
+
+echo
+echo "Layout guards"
+setup
+fixture 'map(if .name == "HDMI-A-1" then .y = 1000 else . end)' # directly below the laptop screen
+echo detached >"$TMP/fixtures/keyboard"
+start
+mark
+event "orient left-up"
+lacks "a monitor below: sideways is skipped" "transform = 1 })"
+has "the notification names the monitor" "would overlap HDMI-A-1"
+mark
+event "orient bottom-up"
+has "upside down never overlaps, so it's allowed" "transform = 2 })"
+stop
+setup
+fixture 'map(if (.name | test("^eDP")) then .mirrorOf = "HDMI-A-1" else . end)'
+echo detached >"$TMP/fixtures/keyboard"
+start
+mark
+event "orient left-up"
+lacks "mirrored: not rotated" "hl.monitor"
+has "mirrored: the notification says why" "mirrored"
+stop
+setup
+source "$CLI"
+load_config
+is "the real layout (HDMI above the laptop screen): no overlap" "$(layout_blocker eDP-1 1)" ""
+mkdir -p "$TMP/config/hypr"
+printf -- '-- hl.monitor({ output = "eDP-1", transform = 1 })\nhl.monitor({ output = "HDMI-A-1", scale = 1 })\n' >"$TMP/config/hypr/monitors.lua"
+CONFIG_HOME="$TMP/config"
+[[ -z $(config_notes eDP-1) ]] && pass "commented-out transforms are ignored" || fail "a commented transform was reported"
+printf 'hl.monitor({ output = "eDP-1", mode = "preferred", transform = 3 })\n' >>"$TMP/config/hypr/monitors.lua"
+config_notes eDP-1 | grep -q "rotates the laptop screen" && pass "a configured panel transform is noted" || fail "a configured transform was missed"
+printf 'hl.device({ name = "elan9008:00-04f3:43c7", transform = 1 })\n' >"$TMP/config/hypr/input.lua"
+config_notes eDP-1 | grep -q "sets transform/output for elan9008:00-04f3:43c7" && pass "a touch device rule is noted" || fail "a touch device rule was missed"
+
+echo
+echo "Original settings record"
+setup
+echo detached >"$TMP/fixtures/keyboard"
+start
+[[ -f $TMP/state/omarchy-tablet-mode/baseline.lua ]] && grep -q "gaps_in = { top = 5" "$TMP/state/omarchy-tablet-mode/baseline.lua" &&
+  pass "a clean record is also kept as the baseline" || fail "no baseline written from a clean record"
+stop
+setup
+echo detached >"$TMP/fixtures/keyboard"
+# Hyprland still holds our tweaks (left behind by a reload or a crash)...
+echo '{"option": "general:gaps_in", "css": "8 8 8 8", "set": true }' >"$TMP/fixtures/option-general_gaps_in.json"
+echo '{"option": "general:gaps_out", "css": "14 14 14 14", "set": true }' >"$TMP/fixtures/option-general_gaps_out.json"
+echo '{"option": "general:extend_border_grab_area", "int": 30, "set": true }' >"$TMP/fixtures/option-general_extend_border_grab_area.json"
+echo '{"option": "general:resize_on_border", "bool": true, "set": true }' >"$TMP/fixtures/option-general_resize_on_border.json"
+# ...and an earlier clean record exists.
+mkdir -p "$TMP/state/omarchy-tablet-mode"
+echo "hl.config({ general = { gaps_in = { top = 5, right = 5, bottom = 5, left = 5 }, gaps_out = { top = 10, right = 10, bottom = 10, left = 10 }, extend_border_grab_area = 15, resize_on_border = false }, cursor = { hide_on_touch = true } })" >"$TMP/state/omarchy-tablet-mode/baseline.lua"
+start
+grep -q "gaps_in = { top = 5" "$TMP/run/tweaks.lua" && pass "tweaked live values are never recorded as the originals" || fail "recorded the tweak values as the originals"
+grep -q "gaps_in = { top = 8" "$TMP/state/omarchy-tablet-mode/baseline.lua" && fail "the baseline was overwritten with tweaks" || pass "the baseline isn't overwritten with tweaks"
+mark
+stop
+has "restore puts back the real originals" "gaps_in = { top = 5, right = 5, bottom = 5, left = 5 }"
+setup
+source "$CLI"
+echo 'hl.config({ general = { x = os.execute("touch /tmp/pwned") } })' >"$TMP/bad.lua"
+tweaks_record_ok "$TMP/bad.lua" && fail "a record with code in it is refused" || pass "a record with code in it is refused"
 
 echo
 echo "Orientation mapping"

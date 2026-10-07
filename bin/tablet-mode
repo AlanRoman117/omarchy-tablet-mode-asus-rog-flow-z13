@@ -26,6 +26,9 @@ INHIBITOR="$RUN_DIR/inhibitor.pid"
 ROTATED="$RUN_DIR/rotated"           # "<output> <transform before the first rotation>"
 TOUCH_MAPPED="$RUN_DIR/touch-mapped" # input devices whose transform/output were set
 TWEAKS="$RUN_DIR/tweaks.lua"         # hl.config(...) that puts the pre-tweak values back
+# The last clean record of the user's own values, kept across sessions: used when the live
+# values can't be trusted because they already look like our tweaks.
+BASELINE="${TABLET_MODE_BASELINE:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-tablet-mode/baseline.lua}"
 UNIT="omarchy-tablet-mode.service"
 UNIT_FILE="$CONFIG_HOME/systemd/user/$UNIT"
 MENU="$CONFIG_HOME/omarchy/extensions/omarchy-menu.jsonc"
@@ -210,9 +213,11 @@ hypr_json() {
     case $1 in
       getoption) cat "$FIXTURES/option-${2//:/_}.json" 2>/dev/null ;;
       monitors)
-        local t
+        local t off=false
         t=$(cat "$RUN_DIR/fake-transform" 2>/dev/null || echo 0)
-        jq -c --argjson t "$t" 'map(if (.name | test("^eDP")) then .transform = $t else . end)' "$FIXTURES/monitors.json"
+        [[ -e $RUN_DIR/fake-panel-off ]] && off=true
+        jq -c --argjson t "$t" --argjson off "$off" \
+          'map(if (.name | test("^eDP")) then .transform = $t | .disabled = $off else . end)' "$FIXTURES/monitors.json"
         ;;
       *) cat "$FIXTURES/$1.json" ;;
     esac
@@ -252,13 +257,55 @@ current_transform() {
   out=$(internal_output) && geo=$(monitor_geometry "$out") && echo "${geo##* }" || echo 0
 }
 
+# layout_blocker <output> <transform>: why the output can't take this transform, or nothing.
+# "mirror" while it mirrors or is mirrored; otherwise the name of an enabled monitor its
+# rotated rectangle (same position, logical size) would overlap. Touching edges is fine.
+layout_blocker() {
+  hypr_json monitors all | jq -r --arg o "$1" --argjson t "$2" '
+    def rect: (if (.transform % 2) == 1 then [.height, .width] else [.width, .height] end) as $s
+      | {x: .x, y: .y, w: ($s[0] / .scale), h: ($s[1] / .scale)};
+    [.[] | select((.disabled // false) | not)] as $on
+    | (first($on[] | select(.name == $o)) // null) as $p
+    | if $p == null then empty
+      elif ($p.mirrorOf // "none") != "none" or any($on[]; (.mirrorOf // "none") == $o) then "mirror"
+      else ($p | .transform = $t | rect) as $r
+        | first($on[] | select(.name != $o and (.mirrorOf // "none") == "none")
+            | . as $m | rect
+            | select(.x < $r.x + $r.w and $r.x < .x + .w and .y < $r.y + $r.h and $r.y < .y + .h)
+            | $m.name) // empty
+      end' 2>/dev/null
+}
+
+# Tells the user once per session why the screen didn't turn. The plugin never edits their layout.
+notify_blocked() {
+  local who=$1 t=$2 key="$1:$2"
+  [[ " ${BLOCKED_NOTIFIED:-} " == *" $key "* ]] && return 0
+  BLOCKED_NOTIFIED="${BLOCKED_NOTIFIED:-} $key"
+  [[ $who == mirror || $who =~ ^[A-Za-z0-9._-]+$ ]] || who="another monitor"
+  if [[ $who == mirror ]]; then
+    log "not rotating: the built-in display is mirrored"
+    cfg_bool notify && notify "Screen not rotated" "The laptop screen is mirrored. Rotation waits until mirroring is off."
+  else
+    log "not rotating: the built-in display would overlap $who"
+    cfg_bool notify && notify "Screen not rotated" "Turned sideways, the laptop screen would overlap $who. Move one of them in ~/.config/hypr/monitors.lua so the laptop screen has room to grow (for example below or beside $who)."
+  fi
+  return 0
+}
+
 # rotate_to <0-3>: turns the built-in display, replaying its live mode, position
 # and scale (a transform-only rule would reset the scale), and maps touch to match.
+# Back to 0 is always allowed; anything else is checked against mirroring and, for the
+# sideways transforms, against overlapping another monitor.
 rotate_to() {
-  local t=$1 out geo mode pos scale cur
+  local t=$1 out geo mode pos scale cur blocker
   out=$(internal_output) || { log "No built-in display found"; return 1; }
   geo=$(monitor_geometry "$out") || return 0 # panel off (docked): nothing to turn
   read -r mode pos scale cur <<<"$geo"
+  if ((cur != t && t != 0)); then
+    blocker=$(layout_blocker "$out" "$t")
+    [[ $blocker == mirror ]] || ((t % 2 == 1)) || blocker=""
+    [[ -n $blocker ]] && { notify_blocked "$blocker" "$t"; return 0; }
+  fi
   if ((cur != t)); then
     [[ -f $ROTATED ]] || printf '%s %s\n' "$out" "$cur" >"$ROTATED"
     hypr_eval "hl.monitor({ output = \"$out\", mode = \"$mode\", position = \"$pos\", scale = $scale, transform = $t })" || return 1
@@ -304,7 +351,8 @@ unrotate() {
     rm -f "$ROTATED"
   fi
   unmap_touch
-  TRANSFORM=0
+  # Back where the config put it, which isn't 0 on a panel the config already rotates.
+  TRANSFORM=$(current_transform)
 }
 
 # Lua literal for an option's current value, from `hyprctl getoption -j`.
@@ -319,17 +367,38 @@ option_lua() {
     else empty end' 2>/dev/null
 }
 
+# A saved record is only ever an hl.config of option names and numbers/booleans; anything
+# else isn't ours and is never evaluated.
+tweaks_record_ok() {
+  [[ $(<"$1") =~ ^hl\.config\(\{[[:space:]a-z_=,{}0-9.]+\}\)$ ]]
+}
+
 tweaks_apply() {
   local gi go bg
   gi=$(cfg_int gaps_in 8) go=$(cfg_int gaps_out 14) bg=$(cfg_int border_grab 30)
   if [[ ! -f $TWEAKS ]]; then
-    local opt value general=() cursor=()
+    local opt value general=() cursor=() record looks_tweaked
     for opt in "${TWEAK_OPTIONS[@]}"; do
       value=$(option_lua "$opt")
       [[ -n $value ]] || { log "Can't read $opt; touch tweaks skipped"; return 1; }
       if [[ $opt == general:* ]]; then general+=("${opt#*:} = $value"); else cursor+=("${opt#*:} = $value"); fi
     done
-    printf 'hl.config({ general = { %s }, cursor = { %s } })\n' "$(join ", " "${general[@]}")" "$(join ", " "${cursor[@]}")" >"$TWEAKS"
+    record=$(printf 'hl.config({ general = { %s }, cursor = { %s } })' "$(join ", " "${general[@]}")" "$(join ", " "${cursor[@]}")")
+    # Live values identical to our tweaks are ours, left behind (a reload that kept them, a
+    # crash): recording them as the originals would make every restore put them back.
+    looks_tweaked="gaps_in = { top = $gi, right = $gi, bottom = $gi, left = $gi }, gaps_out = { top = $go, right = $go, bottom = $go, left = $go }, extend_border_grab_area = $bg, resize_on_border = true"
+    if [[ $record == *"$looks_tweaked"* ]]; then
+      if [[ -f $BASELINE ]] && tweaks_record_ok "$BASELINE"; then
+        log "Hyprland already has the touch tweaks applied; using the last known original settings"
+        cp "$BASELINE" "$TWEAKS"
+      else
+        log "Hyprland already has the touch tweaks applied and there's no earlier record; restore can only put these back"
+        printf '%s\n' "$record" >"$TWEAKS"
+      fi
+    else
+      printf '%s\n' "$record" >"$TWEAKS"
+      mkdir -p "$(dirname "$BASELINE")" && printf '%s\n' "$record" >"$BASELINE"
+    fi
   fi
   hypr_eval "hl.config({ general = { gaps_in = $gi, gaps_out = $go, extend_border_grab_area = $bg, resize_on_border = true }, cursor = { hide_on_touch = true } })" || return 1
   TWEAKS_ON=true
@@ -337,7 +406,11 @@ tweaks_apply() {
 
 tweaks_restore() {
   if [[ -f $TWEAKS ]]; then
-    hypr_eval "$(<"$TWEAKS")" || log "Couldn't put the pre-tweak settings back"
+    if tweaks_record_ok "$TWEAKS"; then
+      hypr_eval "$(<"$TWEAKS")" || log "Couldn't put the pre-tweak settings back"
+    else
+      log "The saved settings record isn't in the expected form; not evaluating it"
+    fi
     rm -f "$TWEAKS"
   fi
   TWEAKS_ON=false
@@ -377,6 +450,14 @@ osk_start() {
   help=$("$bin" --help 2>&1 || true)
   args=(-L "$(cfg_int osk_height_landscape 420)" -H "$(cfg_int osk_height_portrait 420)")
   [[ $help == *--hidden* ]] && args+=(--hidden)
+  # Our wvkbd-deskus build can stay on one output (stay-on-output.patch); others land on
+  # whichever monitor has focus, so osk_show steers focus for them instead.
+  local panel
+  OSK_PINNED=false
+  if [[ $help == *--output* ]] && panel=$(internal_output); then
+    args+=(--output "$panel")
+    OSK_PINNED=true
+  fi
   if [[ -f $THEME_COLORS ]]; then
     local bg dark lighter fg accent flag value
     bg=$(osk_color background 1e1e2e) dark=$(osk_color darker_background "$bg")
@@ -391,11 +472,59 @@ osk_start() {
   [[ $help == *--hidden* ]] || kill -USR1 $! 2>/dev/null || true
 }
 
+# wvkbd can't choose a monitor: its surface appears on the focused one. Docked with an
+# external monitor focused, the built-in display gets focus just while the keyboard
+# appears, then focus and the pointer go back. Prints what to restore, or nothing.
+osk_focus_panel() {
+  local out focused pos=""
+  [[ ${OSK_PINNED:-false} == true ]] && return 0 # the keyboard already stays on the panel
+  panel_on || return 0
+  out=$(internal_output) || return 0
+  focused=$(hypr_json monitors | jq -r 'first(.[] | select(.focused == true) | .name) // empty')
+  [[ -n $focused && $focused != "$out" && $focused =~ ^[A-Za-z0-9._-]+$ ]] || return 0
+  ((DRYRUN)) || pos=$(hyprctl cursorpos 2>/dev/null | tr -d ' ')
+  hypr_eval "hl.dispatch(hl.dsp.focus({ monitor = \"$out\" }))" || return 0
+  echo "$focused $pos"
+}
+
+osk_focus_back() {
+  local focused pos
+  read -r focused pos <<<"$1"
+  hypr_eval "hl.dispatch(hl.dsp.focus({ monitor = \"$focused\" }))"
+  [[ $pos =~ ^(-?[0-9]+),(-?[0-9]+)$ ]] &&
+    hypr_eval "hl.dispatch(hl.dsp.cursor.move({ x = ${BASH_REMATCH[1]}, y = ${BASH_REMATCH[2]} }))"
+  return 0
+}
+
 osk_show() {
-  if ((DRYRUN)); then [[ -f $OSK_PID ]] || osk_start; action "osk show"; OSK_VISIBLE=true; return 0; fi
-  local pid
+  local pid back
+  if ((DRYRUN)); then
+    [[ -f $OSK_PID ]] || osk_start
+    back=$(osk_focus_panel)
+    action "osk show"
+    [[ -n $back ]] && osk_focus_back "$back"
+    OSK_VISIBLE=true
+    return 0
+  fi
   pid=$(osk_running) || { osk_start || return 1; pid=$(osk_running) || return 1; }
+  back=$(osk_focus_panel)
   kill -USR2 "$pid" 2>/dev/null && OSK_VISIBLE=true
+  if [[ -n $back ]]; then
+    # Hold the focus until the keyboard is really up on the built-in display: a wvkbd that
+    # was only just started handles the show signal late.
+    local panel
+    panel=$(internal_output)
+    for _ in {1..15}; do
+      [[ $(osk_layer_monitor) == "$panel" ]] && break
+      sleep 0.1
+    done
+    osk_focus_back "$back"
+  fi
+}
+
+# The monitor wvkbd's surface is on, if it's showing.
+osk_layer_monitor() {
+  hyprctl layers -j 2>/dev/null | jq -r 'to_entries[] | .key as $m | .value.levels[]?[]? | select(.namespace == "wvkbd") | $m' | head -1
 }
 
 osk_hide() {
@@ -461,6 +590,7 @@ cmd__hypr_reader() {
       case $line in
         configreloaded*) echo "hypr reload" ;;
         "monitoradded>>"*) echo "hypr monitor ${line#*>>}" ;;
+        "monitorremoved>>"*) echo "hypr removed ${line#*>>}" ;;
       esac
     done
     sleep 2
@@ -614,9 +744,9 @@ write_state() {
   mkdir -p "$RUN_DIR"
   jq -n --arg mode "$MODE" --arg source "$SOURCE" --arg keyboard "$KBD" --argjson lock "$LOCK" \
     --arg orientation "$ORIENT" --argjson transform "${TRANSFORM:-0}" --argjson osk "$OSK_VISIBLE" \
-    --argjson tweaks "$TWEAKS_ON" --argjson pid "$$" --argjson asleep "${ASLEEP:-false}" \
+    --argjson tweaks "$TWEAKS_ON" --argjson pid "$$" --argjson asleep "${ASLEEP:-false}" --argjson desk "${DESK:-false}" \
     '{running: true, pid: $pid, mode: $mode, source: $source, keyboard: $keyboard, lock: $lock,
-      orientation: $orientation, transform: $transform, osk: $osk, tweaks: $tweaks, asleep: $asleep}' >"$STATE.tmp" &&
+      orientation: $orientation, transform: $transform, osk: $osk, tweaks: $tweaks, asleep: $asleep, desk: $desk}' >"$STATE.tmp" &&
     mv -f "$STATE.tmp" "$STATE"
 }
 
@@ -642,8 +772,16 @@ enter_tablet() {
   local parts=()
   MODE=tablet SOURCE=$1
   log "tablet mode ($1)"
-  if cfg_bool show_keyboard; then osk_show && parts+=("keyboard shown"); fi
-  if cfg_bool touch_tweaks; then tweaks_apply && parts+=("touch tweaks on"); fi
+  if panel_on; then
+    DESK=false
+    if cfg_bool show_keyboard; then osk_show && parts+=("keyboard shown"); fi
+    if cfg_bool touch_tweaks; then tweaks_apply && parts+=("touch tweaks on"); fi
+  else
+    # Docked with the laptop screen off: keyboard and tweaks wait for it (desk mode).
+    DESK=true OSK_RESTORE_DESK=false
+    log "laptop screen off: desk mode (keyboard and touch tweaks wait for it)"
+    parts+=("the laptop screen is off, so the keyboard and touch tweaks wait for it")
+  fi
   if cfg_bool auto_rotate; then
     if [[ $LOCK == true ]]; then parts+=("rotation locked"); else parts+=("auto-rotation on"); fi
   fi
@@ -653,7 +791,7 @@ enter_tablet() {
 }
 
 enter_laptop() {
-  MODE=laptop SOURCE=$1
+  MODE=laptop SOURCE=$1 DESK=false
   log "laptop mode ($1)"
   sensor_sync
   unrotate
@@ -689,21 +827,65 @@ on_usb_settled() {
   esac
 }
 
+panel_on() {
+  local out
+  out=$(internal_output) && monitor_geometry "$out" >/dev/null
+}
+
+# The rotation the panel should have now: in tablet mode with auto-rotation free to follow
+# the sensor, its latest reading (it only reports changes, so a tablet held still never
+# repeats it); otherwise the last rotation applied.
+desired_transform() {
+  if [[ $MODE == tablet && $LOCK != true ]] && cfg_bool auto_rotate && orient_index "$ORIENT" >/dev/null; then
+    transform_for "$ORIENT"
+  else
+    echo "${TRANSFORM:-0}"
+  fi
+}
+
+# Desk mode: docked with the laptop screen off, tablet mode keeps the accelerometer (so the
+# screen comes back the right way up) but pauses the keyboard and the touch tweaks, which
+# would otherwise land on the external monitor. The laptop screen coming back resumes them.
+sync_panel() {
+  [[ $MODE == tablet ]] || return 0
+  if panel_on; then
+    [[ $DESK == true ]] || return 0
+    DESK=false
+    log "laptop screen on: tablet mode resumes"
+    if cfg_bool touch_tweaks; then tweaks_apply; fi
+    if cfg_bool show_keyboard || [[ $OSK_RESTORE_DESK == true ]]; then osk_show; fi
+    rotate_to "$(desired_transform)"
+  else
+    [[ $DESK == true ]] && return 0
+    DESK=true OSK_RESTORE_DESK=$OSK_VISIBLE
+    log "laptop screen off: desk mode (keyboard and touch tweaks paused)"
+    osk_hide
+    tweaks_restore
+  fi
+  write_state
+}
+
 # Re-assert our live changes after Hyprland put its own back.
-#   reload:  monitors.lua, device rules and options are the config's again, so the tweak
-#            snapshot is retaken from them before the tweaks go back on.
+#   reload:  monitors.lua and device rules are the config's again; the tweaks are re-applied
+#            (the record of the user's own values stays as it was taken).
 #   monitor: the panel was re-added (dock, resume) and may have lost its transform;
 #            options didn't change, so the snapshot taken earlier still holds.
 # The record of the panel's original transform is never thrown away: losing it would leave
 # unrotate with nothing to go back to.
 reapply() {
-  if [[ -f $ROTATED ]]; then
-    rotate_to "$TRANSFORM"
+  local t cur
+  t=$(desired_transform)
+  cur=$(current_transform)
+  if [[ -f $ROTATED ]] || ((t != cur)); then
+    ((t != cur)) && panel_on && log "panel back: transform $t"
+    rotate_to "$t"
   elif [[ -f $TOUCH_MAPPED ]]; then
     map_touch "$TRANSFORM" "$(internal_output)"
   fi
+  # The record of the user's own values is never retaken here: after a reload Hyprland may
+  # still hold our tweaks, and recording those as the originals made every later restore
+  # put them back (seen 2026-10-06).
   if [[ $TWEAKS_ON == true ]]; then
-    [[ $1 == reload ]] && rm -f "$TWEAKS"
     tweaks_apply
   fi
   write_state
@@ -711,8 +893,9 @@ reapply() {
 
 on_hypr() {
   case $1 in
-    reload) reapply reload ;;
-    "monitor "*) [[ ${1#monitor } == "$(internal_output 2>/dev/null)" ]] && reapply monitor ;;
+    reload) reapply reload && sync_panel ;;
+    "monitor "*) [[ ${1#monitor } == "$(internal_output 2>/dev/null)" ]] && reapply monitor && sync_panel ;;
+    "removed "*) [[ ${1#removed } == "$(internal_output 2>/dev/null)" ]] && sync_panel ;;
   esac
   return 0
 }
@@ -844,6 +1027,7 @@ cmd_daemon() {
 
   MODE=laptop SOURCE=start LOCK=false ORIENT="" OSK_VISIBLE=false TWEAKS_ON=false
   PENDING="" PENDING_AT=0 KBD_PENDING="" ASLEEP=false RESUME_AT="" OSK_RESTORE=false
+  DESK=false OSK_RESTORE_DESK=false BLOCKED_NOTIFIED=""
   KBD=$(keyboard_state)
   TRANSFORM=$(current_transform)
 
@@ -971,7 +1155,7 @@ status_json() {
     --argjson sensor "$sensor" --arg keyboard "$(keyboard_state)" --arg missing "$(packages_missing | xargs)" \
     '{version: $version, enabled: $enabled, setup: $setup, missing: $missing, sensor: $sensor,
       running: false, mode: "laptop", source: "", keyboard: $keyboard, lock: false,
-      orientation: "", transform: 0, osk: false, tweaks: false} + .' <<<"$live"
+      orientation: "", transform: 0, osk: false, tweaks: false, desk: false} + .' <<<"$live"
 }
 
 cmd_status() {
@@ -1002,7 +1186,7 @@ cmd_status() {
     "  plugin       \(if .enabled then "enabled" else "disabled (plain Omarchy)" end)",
     "  setup        \(.setup)\(if .missing != "" then " (missing: \(.missing))" else "" end)",
     "  service      \(if .running then "running" else "not running" end)",
-    "  mode         \(.mode)\(if .source != "" then " (\(.source))" else "" end)",
+    "  mode         \(.mode)\(if .source != "" then " (\(.source))" else "" end)\(if .desk then ", desk: laptop screen off" else "" end)",
     "  keyboard     \(.keyboard)",
     "  rotation     \(["normal", "90°", "180°", "270°"][.transform] // .transform)\(if .lock then ", locked" else "" end)\(if .orientation != "" then " (sensor: \(.orientation))" else "" end)",
     "  on-screen kb \(if .osk then "shown" else "hidden" end)",
@@ -1251,6 +1435,32 @@ cmd_restore() {
   [[ ${1:-} == --quiet ]] || ok "Live changes undone"
 }
 
+# A heuristic look at the user's Hyprland config (comment lines ignored) for settings that
+# change what auto-rotation and restore mean. Notes only: the plugin never edits these files.
+config_notes() {
+  local panel=$1 file line shown devices device
+  devices=$(touch_devices 2>/dev/null)
+  for file in "$CONFIG_HOME"/hypr/*.lua; do
+    [[ -f $file ]] || continue
+    shown=${file/#"$HOME"/\~}
+    while IFS= read -r line; do
+      line=${line%%--*} # drop Lua comments
+      [[ $line == *transform* || $line == *output* ]] || continue
+      if [[ $line == *hl.monitor* && $line == *transform* ]] &&
+        { [[ -n $panel && $line == *"\"$panel\""* ]] || [[ $line =~ output[[:space:]]*=[[:space:]]*\"\" ]]; }; then
+        note "$shown rotates the laptop screen (transform). Auto-rotation treats 0 as upright: run tablet-mode calibrate if yours is different. Restore puts back the rotation the screen had before the plugin turned it"
+      elif [[ $line == *hl.device* ]]; then
+        while IFS= read -r device; do
+          if [[ -n $device && $line == *"$device"* ]]; then
+            note "$shown sets transform/output for $device. While tablet mode is on, the plugin sets these itself; restore resets them to normal until your config is next reloaded"
+            break
+          fi
+        done <<<"$devices"
+      fi
+    done <"$file"
+  done
+}
+
 cmd_doctor() {
   local full=0 fails=0
   [[ ${1:-} == --full ]] && full=1
@@ -1268,6 +1478,19 @@ cmd_doctor() {
     osk_outdated && note "wvkbd-deskus $(osk_installed_version) is older than the plugin's recipe ($(osk_recipe_version)); run: tablet-mode install"
     check "Built-in display found ($(internal_output 2>/dev/null || echo none))" internal_output
     check "Touchscreen found" test -n "$(touch_devices 2>/dev/null)"
+    local panel blocker
+    panel=$(internal_output 2>/dev/null)
+    if [[ -n $panel ]] && panel_on; then
+      blocker=$(layout_blocker "$panel" 1)
+      case $blocker in
+        "") ok "The laptop screen can turn sideways without overlapping another monitor" ;;
+        mirror) note "The laptop screen is mirrored; auto-rotation waits until mirroring is off" ;;
+        *) note "Turned sideways, the laptop screen would overlap $blocker, so rotation will be skipped. Move one of them in ~/.config/hypr/monitors.lua" ;;
+      esac
+    elif [[ -n $panel ]]; then
+      note "The laptop screen is off: desk mode (no on-screen keyboard or touch tweaks until it's back on)"
+    fi
+    config_notes "$panel"
     check "Service enabled" systemctl --user is-enabled --quiet "$UNIT"
     check "Service running" systemctl --user is-active --quiet "$UNIT"
     note "Keyboard: $(keyboard_state) (${CFG[keyboard]})"
@@ -1347,6 +1570,7 @@ cmd_uninstall() {
   [[ -L $LINK && $(readlink -f "$LINK") == "$SELF" ]] && rm -f "$LINK"
   rm -rf "$RUN_DIR"
   rm -f "$MENU.tablet-mode.bak"
+  rm -rf "$(dirname "$BASELINE")"
   ok "Service, ~/.local/bin/tablet-mode and the menu backup removed"
   if [[ -f $CONF ]] && confirm "Delete your settings ($CONF)?"; then rm -f "$CONF" && ok "Settings deleted"; fi
   if ((packages)) && confirm "Also uninstall iio-sensor-proxy and the on-screen keyboards (sudo)?"; then

@@ -80,6 +80,7 @@ Panel {
     if (setup === "enable") return "ONE STEP LEFT"
     if (setup === "stopped") return "STOPPED"
     if (setup !== "ready") return ""
+    if (tablet && info.desk) return "TABLET MODE · DESK"
     return tablet ? "TABLET MODE" : "LAPTOP MODE"
   }
 
@@ -93,6 +94,7 @@ Panel {
 
   function modeSubtitle() {
     if (actionError !== "") return actionError
+    if (tablet && info.desk) return "Laptop screen off: keyboard and touch tweaks wait for it"
     if (info.source === "manual") return tablet ? "Turned on by hand" : "Turned off by hand"
     if (info.keyboard === "detached") return "Keyboard detached"
     if (info.keyboard === "attached") return "Keyboard attached"

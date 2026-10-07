@@ -40,6 +40,17 @@ The user declined the alternatives:
 
 The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy discussion #14341 (https://github.com/omacom/omarchy/discussions/14341); the text is in `docs/upstream/lock-screen-touch-input.md`. Watch it for replies.
 
+## Docked tablet mode (2026-10-06): built and dry-run tested (119 passing); needs the Z13 dock
+
+- [x] Docked, keyboard off, laptop screen off: no keyboard on HDMI, and `tablet-mode status` says desk (user, 2026-10-06).
+- [x] Found while checking that: the gaps were stuck at the tweak values (8/14). The record of the originals had been retaken after a reload that left our tweaks in place. Fixed: the record is never retaken, there's a guard and a baseline, and records are validated. The user's values were reset to 5/10 by hand.
+- [x] Hold the tablet sideways, then turn the laptop screen on: portrait about 0.1 s after the screen comes up (a brief landscape flash, since Hyprland enables it per monitors.lua first). The log shows `panel back: transform 1`, and the keyboard is on the laptop screen (user, 2026-10-06).
+- [x] The keyboard stays on the laptop screen while HDMI has focus, including through a rotation (wvkbd-deskus 0.20-4 with `--output`, 2026-10-06).
+- Note (2026-10-06): a Quickshell crash during a dev deploy was the shell restart racing the plugin hot-reload burst (an upstream Quickshell bug, also in omacom/omarchy#8647). deploy.sh now waits before restarting. No user data was involved.
+- [x] Laptop screen off again: desk mode; gaps back to 5/10 and to 8/14 when it's on (checked from the log and getoption, 2026-10-06).
+- [x] Reattach the keyboard: laptop mode, landscape, gaps 5/10, no live-change records left, layout unchanged (user + checked, 2026-10-06).
+- [ ] `tablet-mode doctor`: "can turn sideways without overlapping"; no config notes.
+
 ## Hardware checks still to run (Z13)
 
 - [x] Detach / attach, notifications, the keyboard appearing, all four poses, touch and pen (2026-10-05). Default mapping is correct; no calibration needed.

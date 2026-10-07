@@ -31,6 +31,10 @@ done
 echo "Deployed to $DEST"
 
 if [[ $(sha256sum "$DEST/Widget.qml" | cut -d' ' -f1) != "$widget_before" ]] && command -v omarchy >/dev/null; then
+  # The copy just set off a burst of plugin hot-reloads. Restarting the shell in the middle
+  # of it crashed Quickshell 0.3.1 once (SIGSEGV creating an object during exit, 2026-10-06),
+  # so let the burst finish first.
+  sleep 3
   omarchy restart shell >/dev/null 2>&1 && echo "Widget.qml changed: restarted the Omarchy shell to load it"
 fi
 
