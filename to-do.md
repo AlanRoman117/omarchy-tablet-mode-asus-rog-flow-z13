@@ -82,7 +82,7 @@ A subagent's read-only review of the whole repo found no Critical, High or Mediu
   - `scripts/release.sh`, so `main` ships only runtime files.
 - [x] Rebuilt the keyboard (0.20-5) and ran the tablet-mode checks: all passed (user, 2026-10-19).
 - [x] `systemctl --user restart omarchy-tablet-mode` while holding F9: nothing stuck, but wvkbd segfaulted. The hold patch's release in `hide()` queued a frame callback on the key popup, which `hide()` then destroyed. Fixed in 0.20-6 (see CLAUDE.md).
-- [ ] Install 0.20-6, repeat the held-F9 restart and a rotation while holding a key → no new `coredumpctl list` entry, nothing stuck.
+- [x] Installed 0.20-6 through `tablet-mode install -y` (it still asked before building), then repeated the held-F9 restart and a rotation while holding a key: no crash, nothing stuck (user, 2026-10-19).
 
 ## Second security review (2026-10-05): fixed
 
