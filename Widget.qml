@@ -25,7 +25,9 @@ Panel {
   property string actionError: ""
 
   readonly property string cli: decodeURIComponent(Qt.resolvedUrl("bin/tablet-mode").toString().replace("file://", ""))
-  readonly property string runDir: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omarchy-tablet-mode"
+  // The daemon's folder. Without XDG_RUNTIME_DIR nothing is watched (the timer still refreshes):
+  // a guessed shared path like /tmp could be someone else's file.
+  readonly property string runDir: Quickshell.env("XDG_RUNTIME_DIR") ? Quickshell.env("XDG_RUNTIME_DIR") + "/omarchy-tablet-mode" : ""
   readonly property string setup: info.setup || "unknown"
   readonly property bool ready: setup === "ready"
   readonly property bool tablet: ready && info.mode === "tablet"
@@ -162,7 +164,7 @@ Panel {
 
   // The daemon rewrites this on every change, so the icon follows the keyboard live.
   FileView {
-    path: root.runDir + "/state.json"
+    path: root.runDir !== "" ? root.runDir + "/state.json" : ""
     watchChanges: true
     printErrors: false
     onFileChanged: root.refresh()

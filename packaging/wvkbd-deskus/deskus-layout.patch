@@ -1,3 +1,8 @@
+SPDX-License-Identifier: GPL-3.0-only
+US desktop layout: the Compose key leaves the home row; Caps and Enter are 1.75 wide.
+Part of the wvkbd-deskus recipe in alanroman117.tablet-mode; derived from wvkbd 0.20
+(https://git.sr.ht/~proycon/wvkbd), whose COPYING puts it under the GPL v3.0.
+
 --- layout.deskintl.h
 +++ layout.deskus.h
 @@ -194,8 +194,7 @@

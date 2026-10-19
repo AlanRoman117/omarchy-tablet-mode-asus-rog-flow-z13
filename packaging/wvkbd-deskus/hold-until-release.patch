@@ -1,3 +1,8 @@
+SPDX-License-Identifier: GPL-3.0-only
+A held key stays down until the finger lifts; it's released on touch-cancel and on hide, and hide cancels the key popup's pending frame callback.
+Part of the wvkbd-deskus recipe in alanroman117.tablet-mode; derived from wvkbd 0.20
+(https://git.sr.ht/~proycon/wvkbd), whose COPYING puts it under the GPL v3.0.
+
 --- a/keyboard.c
 +++ b/keyboard.c
 @@ -396,9 +396,10 @@
@@ -39,3 +44,17 @@
      if (wfs_draw_surf) {
          wp_fractional_scale_v1_destroy(wfs_draw_surf);
          wfs_draw_surf = NULL;
+@@ -739,6 +749,13 @@
+         xdg_surface_destroy(popup_xdg_surface);
+         popup_xdg_surface = NULL;
+     }
++    // omarchy-tablet-mode: releasing the key above clears its popup, which queues a
++    // frame callback on the popup surface. Cancel it, as upstream does for the main
++    // surface below, or it fires on the destroyed surface and crashes.
++    if (popup_draw_surf.frame_cb) {
++        wl_callback_destroy(popup_draw_surf.frame_cb);
++        popup_draw_surf.frame_cb = NULL;
++    }
+     if (popup_draw_surf.surf) {
+         wl_surface_destroy(popup_draw_surf.surf);
+         popup_draw_surf.surf = NULL;

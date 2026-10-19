@@ -2,7 +2,7 @@
 
 Take the keyboard off a detachable and Omarchy turns into a tablet. The screen follows the accelerometer, an on-screen keyboard appears, and window gaps and border grab areas get bigger for fingers. Put the keyboard back and it's a laptop again. One switch turns the whole plugin off and returns the system to plain Omarchy.
 
-**Tested so far on one machine only: ASUS ROG Flow Z13 (GZ302EA), Omarchy 4.0.4, Hyprland 0.56.2.** Other detachables and convertibles should work after setting their keyboard's USB id and running `calibrate`.
+**Tested so far on one machine only: ASUS ROG Flow Z13 (GZ302EA), Omarchy 4.0.5 (Qt 6.12), Hyprland 0.56.2.** Other detachables and convertibles should work after setting their keyboard's USB id and running `calibrate`.
 
 <p align="center">
   <img src="docs/screenshots/tablet-landscape.png" width="62%" alt="Tablet mode in landscape on the Osaka Jade theme: an empty workspace with the US on-screen keyboard across the bottom half and the floating keyboard button just above it">
@@ -36,12 +36,12 @@ omarchy plugin add https://github.com/AlanRoman117/omarchy-tablet-mode-asus-rog-
 
 Then click the dimmed laptop icon in the bar. The card walks you through setup:
 
-1. **Set up** opens a terminal and asks for your password. It installs `iio-sensor-proxy` from the Arch repos. Then it builds the on-screen keyboard (`packaging/wvkbd-deskus`): wvkbd 0.20 from upstream with two small patches.
+1. **Set up** opens a terminal and asks for your password. It installs `iio-sensor-proxy` from the Arch repos. Then it builds the on-screen keyboard (`packaging/wvkbd-deskus`): wvkbd 0.20 from upstream with three small patches.
    - A US desktop layout: upstream's desktop layout with the Compose key taken off the home row.
    - Held keys stay down until your finger lifts, and are released if the touch is cancelled or the keyboard hides.
    - An `--output` option, so the keyboard stays on the laptop screen when you're docked.
 
-   It shows you every file of the recipe and asks before building. The build runs from that same private copy (plain files only, so nothing can change after you've read it), and makepkg checks the upstream source against its pinned checksum.
+   It shows you every file of the recipe and asks before building (even with `--yes`). The build runs from that same private copy (plain files only, so nothing can change after you've read it), and makepkg checks the upstream source against its pinned checksum.
 2. **Finish setup** starts the service, adds the menu entries and installs a theme hook.
 3. **Calibrate** only if the screen turns the wrong way (on the card, or `tablet-mode calibrate`). It needs two poses, and you confirm the picture is the right way up. The Z13 doesn't need it.
 
@@ -135,7 +135,7 @@ After editing, run `systemctl --user restart omarchy-tablet-mode`.
 - **Showing and hiding it:** in tablet mode a round ⌨ button floats in the bottom-right corner. Tap it to show the keyboard; it then sits just above the keyboard, and tapping it again hides it.
 - **The on-screen keyboard doesn't pop up when you tap a text field.** That would need wvkbd's input-method mode, which competes with fcitx5 (Omarchy's input method). It appears in tablet mode, and the card, the menu and `tablet-mode osk toggle` show or hide it.
 - **Typing on it into the Omarchy menu or a bar popup closes them.** This is an Omarchy bug, tracked in [omacom/omarchy#9029](https://github.com/omacom/omarchy/issues/9029) and [#9756](https://github.com/omacom/omarchy/issues/9756). Normal app windows are fine.
-- **Suspend:** before every sleep the service lets go of the accelerometer and closes the on-screen keyboard, using a logind delay lock, and brings them back about 2 seconds after resume. An early version without this hung the Z13 once when suspending in tablet mode. With it, tablet-mode suspends of 80-95 seconds resumed cleanly (see `to-do.md`).
+- **Suspend:** before every sleep the service lets go of the accelerometer and closes the on-screen keyboard, using a logind delay lock, and brings them back about 2 seconds after resume. An early version without this hung the Z13 once when suspending in tablet mode. With it, tablet-mode suspends of 80-95 seconds resumed cleanly.
 - The accelerometer is only claimed while auto-rotation is active (tablet mode, unlocked), so it isn't kept powered in laptop mode.
 - The rotation lock carries over between modes, as on a phone.
 
@@ -159,5 +159,6 @@ omarchy plugin remove alanroman117.tablet-mode
 
 ## Licence
 
-- **The plugin** (everything except `packaging/`): MIT, see `LICENSE`.
-- **`packaging/wvkbd-deskus/`:** the two patches modify [wvkbd](https://git.sr.ht/~proycon/wvkbd), which is GPL-3.0, so they are GPL-3.0 too. The PKGBUILD only downloads and builds wvkbd's upstream source.
+- **The plugin**, including the PKGBUILD in `packaging/wvkbd-deskus/`: MIT, see `LICENSE`.
+- **The three `.patch` files in `packaging/wvkbd-deskus/`:** GPL-3.0-only. They modify [wvkbd](https://git.sr.ht/~proycon/wvkbd), which upstream's COPYING puts under the GPL v3.0, so they're under it too; each carries an SPDX header.
+- **The built package** is wvkbd itself: GPL-3.0-only, plus MIT for upstream's `os-compatibility.c` (from Weston). It installs upstream's `LICENSE`, `COPYING` and `COPYING_WESTON`. The PKGBUILD downloads wvkbd's source from upstream; none of it is copied into this repo.
