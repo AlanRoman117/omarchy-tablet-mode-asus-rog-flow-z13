@@ -1,8 +1,11 @@
 import QtQuick
+// Namespaced so Controls' Button and ButtonGroup don't shadow the qs.Ui ones.
+import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Tablet mode: bar icon plus a touch-sized card in the style of Omarchy's own
@@ -193,16 +196,16 @@ Panel {
     Rectangle {
       anchors.fill: parent
       radius: width / 2
-      color: Color.background
+      color: Commons.Color.background
       border.width: Math.max(1, Style.normalBorderWidth)
-      border.color: Color.accent
+      border.color: Commons.Color.accent
       opacity: oskTap.pressed ? 0.75 : 0.95
 
       Text {
         anchors.centerIn: parent
         textFormat: Text.PlainText
         text: root.info.osk ? root.keyboardCloseGlyph : root.keyboardGlyph
-        color: Color.foreground
+        color: Commons.Color.foreground
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Style.font.display
       }
@@ -244,126 +247,242 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
-      Column {
-        id: column
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: Style.space(14)
-
-        // ---------- Hero: icon, title/status, keyboard ----------
-        Item {
-          width: parent.width
-          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroValue.implicitHeight)
-
-          Text {
-            id: heroIcon
-            textFormat: Text.PlainText
-            text: root.tablet ? root.tabletGlyph : root.laptopGlyph
-            color: root.bar.foreground
-            opacity: root.ready ? 1 : 0.45
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.display
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          Column {
-            id: heroLabels
-            anchors.left: heroIcon.right
-            anchors.leftMargin: Style.space(14)
-            anchors.right: heroValue.left
-            anchors.rightMargin: Style.space(10)
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(2)
-
-            Text {
-              text: "Tablet Mode"
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-              elide: Text.ElideRight
-              width: parent.width
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              text: root.statusCaption()
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
-              elide: Text.ElideRight
-              width: parent.width
-            }
-          }
-
-          Column {
-            id: heroValue
-            visible: root.ready && root.info.keyboard !== "unknown"
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              anchors.right: parent.right
-              textFormat: Text.PlainText
-              text: root.info.keyboard === "detached" ? "Off" : "On"
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Text {
-              anchors.right: parent.right
-              text: "KEYBOARD"
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.letterSpacing: 1.2
-            }
-          }
+      // The card is capped at the screen's height, so on a short screen (scale 4 on the Z13
+      // leaves 400 logical px) the content scrolls instead of losing its bottom row.
+      Controls.ScrollView {
+        id: scrollArea
+        anchors.fill: parent
+        clip: true
+        Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
+        Controls.ScrollBar.vertical.policy: column.implicitHeight > height ? Controls.ScrollBar.AsNeeded : Controls.ScrollBar.AlwaysOff
+        Binding {
+          target: scrollArea.contentItem
+          property: "interactive"
+          value: column.implicitHeight > scrollArea.height
         }
 
-        PanelSeparator { foreground: root.bar.foreground }
-
-        // ---------- Setup, stopped or disabled ----------
         Column {
-          visible: !root.ready
-          width: parent.width
-          spacing: Style.space(10)
+          id: column
+          width: scrollArea.availableWidth
+          spacing: Style.space(14)
 
-          Text {
-            textFormat: Text.PlainText
-            text: root.actionError !== "" ? root.actionError : root.setupText()
-            color: root.actionError !== "" ? Color.urgent : root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
+          // ---------- Hero: icon, title/status, keyboard ----------
+          Item {
             width: parent.width
+            implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroValue.implicitHeight)
+
+            Text {
+              id: heroIcon
+              textFormat: Text.PlainText
+              text: root.tablet ? root.tabletGlyph : root.laptopGlyph
+              color: root.bar.foreground
+              opacity: root.ready ? 1 : 0.45
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.display
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Column {
+              id: heroLabels
+              anchors.left: heroIcon.right
+              anchors.leftMargin: Style.space(14)
+              anchors.right: heroValue.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(2)
+
+              Text {
+                text: "Tablet Mode"
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.title
+                font.bold: true
+                elide: Text.ElideRight
+                width: parent.width
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                text: root.statusCaption()
+                color: Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+                elide: Text.ElideRight
+                width: parent.width
+              }
+            }
+
+            Column {
+              id: heroValue
+              visible: root.ready && root.info.keyboard !== "unknown"
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+
+              Text {
+                anchors.right: parent.right
+                textFormat: Text.PlainText
+                text: root.info.keyboard === "detached" ? "Off" : "On"
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.title
+                font.bold: true
+              }
+
+              Text {
+                anchors.right: parent.right
+                text: "KEYBOARD"
+                color: Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.letterSpacing: 1.2
+              }
+            }
           }
 
+          PanelSeparator { foreground: root.bar.foreground }
+
+          // ---------- Setup, stopped or disabled ----------
+          Column {
+            visible: !root.ready
+            width: parent.width
+            spacing: Style.space(10)
+
+            Text {
+              textFormat: Text.PlainText
+              text: root.actionError !== "" ? root.actionError : root.setupText()
+              color: root.actionError !== "" ? Commons.Color.urgent : root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+              width: parent.width
+            }
+
+            Row {
+              id: setupRow
+              width: parent.width
+              spacing: Style.space(6)
+              readonly property real cellWidth: (width - spacing) / 2
+
+              Button {
+                width: setupRow.cellWidth
+                iconText: root.setup === "install" ? "" : "󰐥"
+                text: root.setup === "install" ? "Set up" : (root.setup === "enable" ? "Finish setup" : (root.setup === "stopped" ? "Start" : "Turn on"))
+                fontSize: Style.font.bodySmall
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                bordered: true
+                onClicked: root.setup === "install" ? root.openTerminal("install") : root.runAction("enable", ["enable"])
+              }
+
+              Button {
+                width: setupRow.cellWidth
+                iconText: ""
+                text: "Check"
+                fontSize: Style.font.bodySmall
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                bordered: true
+                onClicked: root.openTerminal("doctor")
+              }
+            }
+          }
+
+          // ---------- Switches ----------
+          Column {
+            visible: root.ready
+            width: parent.width
+            spacing: Style.space(12)
+
+            SwitchRow {
+              title: "Tablet mode"
+              subtitle: root.modeSubtitle()
+              warn: root.actionError !== ""
+              checked: root.tablet
+              onToggled: root.runAction("mode", ["toggle"])
+            }
+
+            SwitchRow {
+              title: "On-screen keyboard"
+              subtitle: root.info.osk ? "Shown" : "Hidden"
+              checked: !!root.info.osk
+              onToggled: root.runAction("osk", ["osk", "toggle"])
+            }
+
+            SwitchRow {
+              title: "Rotation lock"
+              subtitle: root.rotationSubtitle()
+              checked: !!root.info.lock
+              onToggled: root.runAction("lock", ["lock", "toggle"])
+            }
+          }
+
+          PanelSeparator { visible: root.ready; foreground: root.bar.foreground }
+
+          // ---------- Turn the screen ----------
+          Column {
+            visible: root.ready
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSectionHeader {
+              text: "TURN THE SCREEN"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+
+            ButtonGroup {
+              width: parent.width
+              options: [
+                { value: "normal", label: "0°" },
+                { value: "90", label: "90°" },
+                { value: "180", label: "180°" },
+                { value: "270", label: "270°" }
+              ]
+              value: root.rotations[root.info.transform || 0] || "normal"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.bodySmall
+              focusable: false
+              onChanged: function(value) { root.runAction("rotate", ["rotate", value]) }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Picking one locks rotation. Upside down or sideways when you turn it? Calibrate."
+              color: root.bar.foreground
+              opacity: 0.6
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              width: parent.width
+            }
+          }
+
+          PanelSeparator { visible: root.ready; foreground: root.bar.foreground }
+
           Row {
-            id: setupRow
+            id: toolsRow
+            visible: root.ready
             width: parent.width
             spacing: Style.space(6)
-            readonly property real cellWidth: (width - spacing) / 2
+            readonly property real cellWidth: (width - spacing * 2) / 3
 
             Button {
-              width: setupRow.cellWidth
-              iconText: root.setup === "install" ? "" : "󰐥"
-              text: root.setup === "install" ? "Set up" : (root.setup === "enable" ? "Finish setup" : (root.setup === "stopped" ? "Start" : "Turn on"))
+              width: toolsRow.cellWidth
+              iconText: "󰑵"
+              text: "Calibrate"
               fontSize: Style.font.bodySmall
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               bordered: true
-              onClicked: root.setup === "install" ? root.openTerminal("install") : root.runAction("enable", ["enable"])
+              onClicked: root.openTerminal("calibrate")
             }
 
             Button {
-              width: setupRow.cellWidth
+              width: toolsRow.cellWidth
               iconText: ""
               text: "Check"
               fontSize: Style.font.bodySmall
@@ -372,121 +491,18 @@ Panel {
               bordered: true
               onClicked: root.openTerminal("doctor")
             }
-          }
-        }
 
-        // ---------- Switches ----------
-        Column {
-          visible: root.ready
-          width: parent.width
-          spacing: Style.space(12)
-
-          SwitchRow {
-            title: "Tablet mode"
-            subtitle: root.modeSubtitle()
-            warn: root.actionError !== ""
-            checked: root.tablet
-            onToggled: root.runAction("mode", ["toggle"])
-          }
-
-          SwitchRow {
-            title: "On-screen keyboard"
-            subtitle: root.info.osk ? "Shown" : "Hidden"
-            checked: !!root.info.osk
-            onToggled: root.runAction("osk", ["osk", "toggle"])
-          }
-
-          SwitchRow {
-            title: "Rotation lock"
-            subtitle: root.rotationSubtitle()
-            checked: !!root.info.lock
-            onToggled: root.runAction("lock", ["lock", "toggle"])
-          }
-        }
-
-        PanelSeparator { visible: root.ready; foreground: root.bar.foreground }
-
-        // ---------- Turn the screen ----------
-        Column {
-          visible: root.ready
-          width: parent.width
-          spacing: Style.space(8)
-
-          PanelSectionHeader {
-            text: "TURN THE SCREEN"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-          }
-
-          ButtonGroup {
-            width: parent.width
-            options: [
-              { value: "normal", label: "0°" },
-              { value: "90", label: "90°" },
-              { value: "180", label: "180°" },
-              { value: "270", label: "270°" }
-            ]
-            value: root.rotations[root.info.transform || 0] || "normal"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            fontSize: Style.font.bodySmall
-            focusable: false
-            onChanged: function(value) { root.runAction("rotate", ["rotate", value]) }
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            text: "Picking one locks rotation. Upside down or sideways when you turn it? Calibrate."
-            color: root.bar.foreground
-            opacity: 0.6
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-            width: parent.width
-          }
-        }
-
-        PanelSeparator { visible: root.ready; foreground: root.bar.foreground }
-
-        Row {
-          id: toolsRow
-          visible: root.ready
-          width: parent.width
-          spacing: Style.space(6)
-          readonly property real cellWidth: (width - spacing * 2) / 3
-
-          Button {
-            width: toolsRow.cellWidth
-            iconText: "󰑵"
-            text: "Calibrate"
-            fontSize: Style.font.bodySmall
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            bordered: true
-            onClicked: root.openTerminal("calibrate")
-          }
-
-          Button {
-            width: toolsRow.cellWidth
-            iconText: ""
-            text: "Check"
-            fontSize: Style.font.bodySmall
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            bordered: true
-            onClicked: root.openTerminal("doctor")
-          }
-
-          Button {
-            width: toolsRow.cellWidth
-            iconText: "󰐥"
-            text: "Turn off"
-            tooltipText: "Plain Omarchy: stop everything and undo every change"
-            fontSize: Style.font.bodySmall
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            bordered: true
-            onClicked: root.runAction("disable", ["disable"])
+            Button {
+              width: toolsRow.cellWidth
+              iconText: "󰐥"
+              text: "Turn off"
+              tooltipText: "Plain Omarchy: stop everything and undo every change"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              bordered: true
+              onClicked: root.runAction("disable", ["disable"])
+            }
           }
         }
       }
@@ -524,7 +540,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: row.subtitle
-        color: row.warn ? Color.urgent : root.bar.foreground
+        color: row.warn ? Commons.Color.urgent : root.bar.foreground
         opacity: row.warn ? 1 : 0.6
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.bodySmall

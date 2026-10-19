@@ -320,6 +320,12 @@ for name in $(grep -oE 'start_reader [a-z]+' "$CLI" | awk '{print $2}' | sort -u
 done
 
 echo
+echo "Widget"
+# Qt 6.12's QtQuick has its own Color type, which shadows Omarchy's palette singleton.
+grep -nE '(^|[^.A-Za-z])Color\.' "$HERE/../Widget.qml" >/dev/null &&
+  fail "Widget.qml uses bare Color (write Commons.Color)" || pass "Widget.qml qualifies the palette as Commons.Color"
+
+echo
 echo "PID files"
 mkdir -p "$TMP/pids"
 echo 1 >"$TMP/pids/one"
