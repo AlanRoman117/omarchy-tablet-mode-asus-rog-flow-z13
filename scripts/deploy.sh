@@ -40,7 +40,9 @@ fi
 
 # Keep an installed unit in step with the template, then restart a running service.
 if [[ -f $UNIT_FILE ]]; then
-  sed "s|@BIN@|$DEST/bin/tablet-mode|g" "$DEST/systemd/$UNIT" >"$UNIT_FILE"
+  # The path goes into sed's replacement and the unit, as `tablet-mode enable` also requires.
+  [[ $DEST =~ ^[A-Za-z0-9._/+-]+$ ]] || { echo "Unsupported characters in $DEST; unit not updated" >&2; exit 1; }
+  sed "s|@BIN@|$DEST/bin/tablet-mode|g" "$DEST/systemd/$UNIT" >"$UNIT_FILE.tmp" && mv -f "$UNIT_FILE.tmp" "$UNIT_FILE"
   systemctl --user daemon-reload
   systemctl --user try-restart "$UNIT" && echo "Restarted $UNIT (if it was running)"
 fi

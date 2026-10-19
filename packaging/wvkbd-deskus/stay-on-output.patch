@@ -1,3 +1,8 @@
+SPDX-License-Identifier: GPL-3.0-only
+--output NAME keeps the keyboard's layer surface on one output (wl_output v4 name).
+Part of the wvkbd-deskus recipe in alanroman117.tablet-mode; derived from wvkbd 0.20
+(https://git.sr.ht/~proycon/wvkbd), whose COPYING puts it under the GPL v3.0.
+
 --- a/main.c
 +++ b/main.c
 @@ -75,6 +75,13 @@
