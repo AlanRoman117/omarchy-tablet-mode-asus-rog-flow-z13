@@ -373,6 +373,8 @@ mkdir "$TMP/builds"
 out=$(TMPDIR="$TMP/builds" YES=1 build_reviewed "$TMP/recipe" </dev/null 2>&1)
 [[ $out == *"Not installed"* ]] && pass "--yes never answers the build question" || fail "--yes skipped the recipe review (${out##*$'\n'})"
 [[ -z $(ls -A "$TMP/builds") ]] && pass "the private build folder is removed when the build is declined" || fail "a build folder was left behind"
+grep -q 'wl_callback_destroy(popup_draw_surf.frame_cb)' "$HERE/../packaging/wvkbd-deskus/hold-until-release.patch" &&
+  pass "hiding cancels the key popup's frame callback (wvkbd crashed without it)" || fail "the hold patch no longer cancels the popup's frame callback"
 grep -qx 'KillMode=mixed' "$HERE/../systemd/omarchy-tablet-mode.service" &&
   pass "stopping the service signals the daemon first (KillMode=mixed)" || fail "the unit kills wvkbd before the daemon can hide it"
 

@@ -80,8 +80,9 @@ A subagent's read-only review of the whole repo found no Critical, High or Mediu
   - the patch count, licences (`GPL-3.0-only MIT`, upstream's licence files installed, SPDX headers on the patches; wvkbd-deskus 0.20-5);
   - README links to dev files;
   - `scripts/release.sh`, so `main` ships only runtime files.
-- [ ] Rebuild the keyboard (`tablet-mode install`, 0.20-4 → 0.20-5) and run the tablet-mode checks.
-- [ ] `systemctl --user restart omarchy-tablet-mode` while holding F9 on the on-screen keyboard → no stuck key (the open question behind the `KillMode` finding).
+- [x] Rebuilt the keyboard (0.20-5) and ran the tablet-mode checks: all passed (user, 2026-10-19).
+- [x] `systemctl --user restart omarchy-tablet-mode` while holding F9: nothing stuck, but wvkbd segfaulted. The hold patch's release in `hide()` queued a frame callback on the key popup, which `hide()` then destroyed. Fixed in 0.20-6 (see CLAUDE.md).
+- [ ] Install 0.20-6, repeat the held-F9 restart and a rotation while holding a key → no new `coredumpctl list` entry, nothing stuck.
 
 ## Second security review (2026-10-05): fixed
 

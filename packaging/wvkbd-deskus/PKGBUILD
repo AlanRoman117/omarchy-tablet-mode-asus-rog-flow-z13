@@ -7,7 +7,8 @@
 #   hold-until-release.patch: a held key stays down until the finger lifts instead of
 #     letting go on the slightest movement, so hold-to-talk keys work. Since nothing
 #     releases it early any more, it's also released when the touch is cancelled and when
-#     the keyboard hides (which covers rotation and resize).
+#     the keyboard hides (which covers rotation and resize). Hiding also cancels the key
+#     popup's pending frame callback, which that release queues (0.20-6: it crashed).
 #   stay-on-output.patch: --output NAME keeps the keyboard on one output. Upstream lets
 #     the compositor pick one on every resize, so a docked tablet's keyboard jumped to the
 #     focused external monitor whenever it rotated.
@@ -19,7 +20,7 @@
 
 pkgname=wvkbd-deskus
 pkgver=0.20
-pkgrel=5
+pkgrel=6
 pkgdesc='On-screen keyboard for wlroots, US desktop layout (for omarchy-tablet-mode)'
 url='https://git.sr.ht/~proycon/wvkbd'
 arch=('x86_64' 'aarch64')
@@ -33,7 +34,7 @@ source=("wvkbd-$pkgver.tar.gz::https://git.sr.ht/~proycon/wvkbd/archive/v$pkgver
         'stay-on-output.patch')
 sha512sums=('1c5204dc00f7a3bdfd199dfa88b513c46249b7832ba546c0554940539fcc4e0d55303a9f6edd17dd82fd2893b602b86395202311b3ec851f5e8f41895f682371'
             'cb5c7320e2a794f9cc37f62bec69baed7b46b6e8f28d96b95c37227ed6b60f8ab2f961863b8293f54654227ff429d690a2572888f4d060600ae82b3debf96074'
-            '08ec31accc84fa44e484d98e427a5ad8405429698ea43dbf52cc7c6d52b49af07f27c016059d5fc42c8d3d9113e221d8042cb61e6cee8bf3c51912732ad8c52a'
+            '295f6dc90df201c96d16f71ed0e9bc8b5217336c4bb8ca4436340a7be7f4d55bbd487d29dd614f0ef76748943d3c87019d2cbdc49844617264af22efcac887e2'
             '968c345c87d35f399061da525d76c3a9bb2c6f8078ded457334d787d2185c9a1a4381b81d5fc3a3d84f90dbb78cc8264c20dfe57cbf0d5138da96956a81077d8')
 
 prepare() {
