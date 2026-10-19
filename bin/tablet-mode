@@ -80,10 +80,11 @@ load_config() {
 
 cfg_bool() { [[ ${CFG[$1]} == true ]]; }
 
-# cfg_int <key> <fallback>: the setting if it's a plain number, else the fallback.
+# cfg_int <key> <fallback>: the setting if it's a plain number, else the fallback. Read as
+# decimal: bash would take 08 as a bad octal number and fail every comparison it's in.
 cfg_int() {
   local value=${CFG[$1]}
-  if [[ $value =~ ^[0-9]{1,5}$ ]]; then echo "$value"; else echo "$2"; fi
+  if [[ $value =~ ^[0-9]{1,5}$ ]]; then echo "$((10#$value))"; else echo "$2"; fi
 }
 
 write_default_config() {
@@ -367,10 +368,15 @@ option_lua() {
     else empty end' 2>/dev/null
 }
 
-# A saved record is only ever an hl.config of option names and numbers/booleans; anything
-# else isn't ours and is never evaluated.
+# A saved record is only ever exactly what tweaks_apply writes: an hl.config with a general
+# and a cursor table of option names, each set to a number, a boolean or a gaps table.
+# Anything else isn't ours and is never evaluated (Lua's f{...} call syntax included).
 tweaks_record_ok() {
-  [[ $(<"$1") =~ ^hl\.config\(\{[[:space:]a-z_=,{}0-9.]+\}\)$ ]]
+  local num='-?[0-9]+(\.[0-9]+)?'
+  local value="($num|true|false|\\{ top = $num, right = $num, bottom = $num, left = $num \\})"
+  local list="[a-z_]+ = $value(, [a-z_]+ = $value)*"
+  local re="^hl\\.config\\(\\{ general = \\{ $list \\}, cursor = \\{ $list \\} \\}\\)$"
+  [[ $(<"$1") =~ $re ]]
 }
 
 tweaks_apply() {
@@ -925,7 +931,7 @@ on_sleep() {
 }
 
 on_command() {
-  case "$1 ${2:-}" in
+  case "${1:-} ${2:-}" in
     "on "*) [[ $MODE == tablet ]] || enter_tablet manual ;;
     "off "*) [[ $MODE == laptop ]] || enter_laptop manual ;;
     "toggle "*) if [[ $MODE == tablet ]]; then enter_laptop manual; else enter_tablet manual; fi ;;
@@ -1196,27 +1202,33 @@ cmd_status() {
 # Builds a package from a recipe you've just read. The recipe is copied to a private build
 # folder first; everything in that folder is shown, and that same folder is what makepkg
 # builds. makepkg checks the upstream source against the recipe's pinned checksums.
+BUILD_DIR=""
 build_reviewed() {
   local src=$1 pkg dir file
   pkg=$(basename "$src")
   command -v makepkg >/dev/null || die "Needs base-devel (makepkg) to build $pkg"
   [[ -f $src/PKGBUILD && ! -L $src ]] || die "No recipe at $src"
-  # Only plain files: a symlink would be read again at build time, after you've reviewed it.
-  [[ -z $(find "$src" -mindepth 1 ! -type f -print -quit) ]] || die "The recipe at $src contains something other than plain files; refusing to build it"
   dir=$(mktemp -d) || die "Can't create a build folder"
-  cp -r "$src" "$dir/$pkg"
+  # Removed however this ends: done, refused, failed or Ctrl-C.
+  BUILD_DIR=$dir
+  trap '[[ -n $BUILD_DIR ]] && rm -rf "$BUILD_DIR"' EXIT
+  trap 'exit 130' INT TERM
+  cp -RP "$src" "$dir/$pkg"
+  # Only plain files: a symlink would be read again at build time, after you've reviewed it.
+  # Checked on the private copy, so nothing can be swapped in between the check and the copy.
+  [[ -z $(find "$dir/$pkg" -mindepth 1 ! -type f -print -quit) ]] || die "The recipe at $src contains something other than plain files; refusing to build it"
   step "$pkg: the complete recipe that will be built"
   while IFS= read -r file; do
     echo "  ── ${file#"$dir/$pkg/"}"
     cat -v "$file" | sed 's/^/  | /' # control characters shown, so nothing can hide a line
   done < <(find "$dir/$pkg" -type f | sort)
   echo
-  if ! confirm "Build and install $pkg from this recipe?"; then
-    rm -rf "$dir"
-    die "Not installed"
-  fi
-  (cd "$dir/$pkg" && makepkg --syncdeps --install --needed) || { rm -rf "$dir"; die "Building $pkg failed"; }
+  # The one question --yes never answers: you build what you've just read, or nothing.
+  local YES=0
+  confirm "Build and install $pkg from this recipe?" || die "Not installed"
+  (cd "$dir/$pkg" && makepkg --syncdeps --install --needed) || die "Building $pkg failed"
   rm -rf "$dir"
+  BUILD_DIR=""
 }
 
 cmd_install() {
@@ -1239,8 +1251,9 @@ cmd_install() {
   [[ $missing == *iio-sensor-proxy* ]] && echo "   - iio-sensor-proxy, from the Arch repos: reads the accelerometer"
   osk_outdated && echo "   - an update of wvkbd-deskus, $(osk_installed_version) -> $(osk_recipe_version):"
   [[ $missing == *wvkbd-deskus* ]] && echo "   - wvkbd-deskus: the on-screen keyboard with a US desktop layout, built from this plugin's"
-  [[ $missing == *wvkbd-deskus* ]] && echo "     recipe: wvkbd 0.20 from upstream plus two small patches (US layout; held keys stay down"
-  [[ $missing == *wvkbd-deskus* ]] && echo "     until the finger lifts, released on cancel/hide). You'll see all of it first."
+  [[ $missing == *wvkbd-deskus* ]] && echo "     recipe: wvkbd 0.20 from upstream plus three small patches (US layout; held keys stay"
+  [[ $missing == *wvkbd-deskus* ]] && echo "     down until the finger lifts; the keyboard stays on the laptop screen). You'll see all of"
+  [[ $missing == *wvkbd-deskus* ]] && echo "     it first, and it's built only if you say yes, even with --yes."
   confirm "Continue?" || exit 1
   if [[ $missing == *iio-sensor-proxy* ]]; then
     if command -v omarchy-pkg-add >/dev/null; then omarchy-pkg-add iio-sensor-proxy; else sudo pacman -S --needed iio-sensor-proxy; fi
@@ -1290,18 +1303,32 @@ EOF
 }
 
 # Removes our block, but only when it's intact: exactly one begin and one end marker, in
-# that order. Otherwise sed's range would run to the end of the user's file.
+# that order. Otherwise sed's range would run to the end of the user's file. The result must
+# parse, or nothing changes. If an entry the user added after our block relies on the lone
+# comma inside it, that comma stays behind in place of the block. Written through a symlink
+# (a dotfiles manager's link stays a link, and its target loses the block).
 menu_remove() {
   [[ -f $MENU ]] || return 0
-  local begins ends
+  local begins ends tmp keep
   begins=$(grep -n '^[[:space:]]*// >>> tablet-mode:' "$MENU" | cut -d: -f1)
   ends=$(grep -n '^[[:space:]]*// <<< tablet-mode' "$MENU" | cut -d: -f1)
   [[ -z $begins && -z $ends ]] && return 0
-  if [[ $begins =~ ^[0-9]+$ && $ends =~ ^[0-9]+$ ]] && ((begins < ends)); then
-    sed -i "${begins},${ends}d" "$MENU"
-    return 0
+  if ! [[ $begins =~ ^[0-9]+$ && $ends =~ ^[0-9]+$ ]] || ((begins >= ends)); then
+    note "The tablet-mode block in $MENU is damaged (markers missing or out of order); fix or remove it by hand"
+    return 1
   fi
-  note "The tablet-mode block in $MENU is damaged (markers missing or out of order); fix or remove it by hand"
+  tmp=$(mktemp) || return 1
+  for keep in "" ","; do
+    { head -n $((begins - 1)) "$MENU"; [[ -n $keep ]] && echo "  ,"; tail -n +$((ends + 1)) "$MENU"; } >"$tmp"
+    if jsonc_ok "$tmp" 2>/dev/null; then
+      cat "$tmp" >"$MENU"
+      rm -f "$tmp"
+      [[ -n $keep ]] && note "Left a lone comma where the tablet-mode block was: an entry after it needs it"
+      return 0
+    fi
+  done
+  rm -f "$tmp"
+  note "Removing the tablet-mode block would leave $MENU unparseable; fix or remove it by hand"
   return 1
 }
 
@@ -1309,7 +1336,8 @@ menu_remove() {
 # so "https://..." inside a value isn't mistaken for a comment.
 jsonc_ok() {
   command -v python3 >/dev/null || return 2
-  python3 - "$1" <<'PY'
+  # -I: isolated, so a json.py or re.py in the current folder is never imported.
+  python3 -I - "$1" <<'PY'
 import json, re, sys
 src = open(sys.argv[1], encoding="utf-8").read()
 out, i, n = [], 0, len(src)
@@ -1344,7 +1372,8 @@ menu_add() {
     1) note "$MENU doesn't parse as it is; menu entries skipped"; return 0 ;;
     2) note "python3 is needed to edit $MENU safely; menu entries skipped"; return 0 ;;
   esac
-  [[ -f $MENU.tablet-mode.bak ]] || cp -a "$MENU" "$MENU.tablet-mode.bak"
+  # The file's contents, even when $MENU is a symlink (a copy of the link would back up nothing).
+  [[ -f $MENU.tablet-mode.bak ]] || cp -pL "$MENU" "$MENU.tablet-mode.bak"
   local last tmp comma
   last=$(grep -n '^[[:space:]]*}[[:space:]]*$' "$MENU" | tail -1 | cut -d: -f1)
   [[ -n $last ]] || { note "Couldn't find the end of $MENU; menu entries skipped"; return 0; }
@@ -1398,6 +1427,7 @@ cmd_enable() {
   refresh_widget
 }
 
+MENU_KEPT=0
 cmd_disable() {
   local full=0
   [[ ${1:-} == --full ]] && full=1
@@ -1409,12 +1439,12 @@ cmd_disable() {
   ok "Plain Omarchy again: landscape, no on-screen keyboard, Hyprland's own settings back"
   ok "Nothing starts at login"
   if ((full)); then
-    menu_remove
+    if menu_remove; then ok "Menu entries removed"; else MENU_KEPT=1; fi
     rm -f "$HOOK"
     if plugin_on_bar && command -v omarchy-plugin-disable >/dev/null; then
       omarchy-plugin-disable "$PLUGIN_ID" >/dev/null 2>&1 || true
     fi
-    ok "Menu entries, theme hook and bar icon removed"
+    ok "Theme hook and bar icon removed"
     echo
     echo "Bring it all back with: tablet-mode enable"
   else
@@ -1568,10 +1598,18 @@ cmd_uninstall() {
   rm -f "$UNIT_FILE"
   systemctl --user daemon-reload
   [[ -L $LINK && $(readlink -f "$LINK") == "$SELF" ]] && rm -f "$LINK"
-  rm -rf "$RUN_DIR"
-  rm -f "$MENU.tablet-mode.bak"
-  rm -rf "$(dirname "$BASELINE")"
-  ok "Service, ~/.local/bin/tablet-mode and the menu backup removed"
+  # Both paths can come from environment overrides (the tests set them), so nothing here
+  # deletes a folder that isn't plainly ours.
+  [[ $(basename "$RUN_DIR") == omarchy-tablet-mode ]] && rm -rf "$RUN_DIR"
+  rm -f "$BASELINE"
+  rmdir "$(dirname "$BASELINE")" 2>/dev/null
+  if ((MENU_KEPT)); then
+    ok "Service and ~/.local/bin/tablet-mode removed"
+    note "The menu backup stays ($MENU.tablet-mode.bak), since the menu entries couldn't be removed"
+  else
+    rm -f "$MENU.tablet-mode.bak"
+    ok "Service, ~/.local/bin/tablet-mode and the menu backup removed"
+  fi
   if [[ -f $CONF ]] && confirm "Delete your settings ($CONF)?"; then rm -f "$CONF" && ok "Settings deleted"; fi
   if ((packages)) && confirm "Also uninstall iio-sensor-proxy and the on-screen keyboards (sudo)?"; then
     local installed

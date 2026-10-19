@@ -1,3 +1,8 @@
+SPDX-License-Identifier: GPL-3.0-only
+A held key stays down until the finger lifts; it's released on touch-cancel and on hide.
+Part of the wvkbd-deskus recipe in alanroman117.tablet-mode; derived from wvkbd 0.20
+(https://git.sr.ht/~proycon/wvkbd), whose COPYING puts it under the GPL v3.0.
+
 --- a/keyboard.c
 +++ b/keyboard.c
 @@ -396,9 +396,10 @@

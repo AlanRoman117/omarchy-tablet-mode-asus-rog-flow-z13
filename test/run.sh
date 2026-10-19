@@ -116,6 +116,9 @@ event "hypr reload"
 grep -q SNAPSHOT-SENTINEL "$TMP/run/tweaks.lua" && pass "a reload keeps the original record too" || fail "a reload retook the record (it could capture the tweaks)"
 echo "hl.config({ general = { gaps_in = { top = 5, right = 5, bottom = 5, left = 5 }, gaps_out = { top = 10, right = 10, bottom = 10, left = 10 }, extend_border_grab_area = 15, resize_on_border = false }, cursor = { hide_on_touch = true } })" >"$TMP/run/tweaks.lua"
 
+"$CLI" send cmd && sleep 0.3
+kill -0 "$DPID" 2>/dev/null && pass "an empty command is ignored (the daemon keeps running)" || { fail "an empty command killed the daemon"; start; }
+
 mark
 event "cmd rotate 2"
 has "manual rotate turns the screen" "transform = 2 })"
@@ -260,9 +263,9 @@ printf -- '-- hl.monitor({ output = "eDP-1", transform = 1 })\nhl.monitor({ outp
 CONFIG_HOME="$TMP/config"
 [[ -z $(config_notes eDP-1) ]] && pass "commented-out transforms are ignored" || fail "a commented transform was reported"
 printf 'hl.monitor({ output = "eDP-1", mode = "preferred", transform = 3 })\n' >>"$TMP/config/hypr/monitors.lua"
-config_notes eDP-1 | grep -q "rotates the laptop screen" && pass "a configured panel transform is noted" || fail "a configured transform was missed"
+grep -q "rotates the laptop screen" <<<"$(config_notes eDP-1)" && pass "a configured panel transform is noted" || fail "a configured transform was missed"
 printf 'hl.device({ name = "elan9008:00-04f3:43c7", transform = 1 })\n' >"$TMP/config/hypr/input.lua"
-config_notes eDP-1 | grep -q "sets transform/output for elan9008:00-04f3:43c7" && pass "a touch device rule is noted" || fail "a touch device rule was missed"
+grep -q "sets transform/output for elan9008:00-04f3:43c7" <<<"$(config_notes eDP-1)" && pass "a touch device rule is noted" || fail "a touch device rule was missed"
 
 echo
 echo "Original settings record"
@@ -292,6 +295,12 @@ setup
 source "$CLI"
 echo 'hl.config({ general = { x = os.execute("touch /tmp/pwned") } })' >"$TMP/bad.lua"
 tweaks_record_ok "$TMP/bad.lua" && fail "a record with code in it is refused" || pass "a record with code in it is refused"
+echo 'hl.config({ general = { gaps_in = hl.config{ cursor = { x = 1 } }, x = os.exit{} }, cursor = { hide_on_touch = true } })' >"$TMP/bad.lua"
+tweaks_record_ok "$TMP/bad.lua" && fail "Lua's f{...} call syntax is refused" || pass "Lua's f{...} call syntax is refused"
+echo 'hl.config({ general = { gaps_in = 1 .. 2 }, cursor = { hide_on_touch = true } })' >"$TMP/bad.lua"
+tweaks_record_ok "$TMP/bad.lua" && fail "concatenation is refused" || pass "concatenation is refused"
+echo "hl.config({ general = { gaps_in = { top = 5, right = 5, bottom = 5, left = 5 }, gaps_out = { top = 10, right = 10, bottom = 10, left = 10 }, extend_border_grab_area = 15, resize_on_border = false }, cursor = { hide_on_touch = true } })" >"$TMP/good.lua"
+tweaks_record_ok "$TMP/good.lua" && pass "a genuine record is accepted" || fail "a genuine record was refused"
 
 echo
 echo "Orientation mapping"
@@ -309,6 +318,10 @@ is "offset 1: right-up -> 0" "$(transform_for right-up)" 0
 CFG[orientation_offset]=0 CFG[orientation_mirror]=true
 is "mirror: left-up -> 3" "$(transform_for left-up)" 3
 is "mirror: bottom-up stays 2" "$(transform_for bottom-up)" 2
+CFG[orientation_mirror]=false CFG[orientation_offset]=09 CFG[debounce_ms]=08
+is "a leading zero is decimal, not a bad octal number" "$(cfg_int debounce_ms 400)" 8
+is "offset 09 turns like 1" "$(transform_for normal)" 1
+CFG[orientation_offset]=0
 is "lua_str escapes quotes" "$(lua_str 'a"b\c')" '"a\"b\\c"'
 lua_str $'bad\nname' >/dev/null && fail "lua_str refuses control characters" || pass "lua_str refuses control characters"
 
@@ -324,6 +337,14 @@ echo "Widget"
 # Qt 6.12's QtQuick has its own Color type, which shadows Omarchy's palette singleton.
 grep -nE '(^|[^.A-Za-z])Color\.' "$HERE/../Widget.qml" >/dev/null &&
   fail "Widget.qml uses bare Color (write Commons.Color)" || pass "Widget.qml qualifies the palette as Commons.Color"
+
+echo
+echo "Release"
+deployed=$(sed -n 's/^FILES=(\(.*\))$/\1/p' "$HERE/../scripts/deploy.sh")
+shipped=" $(sed -n 's/^SHIP=(\(.*\))$/\1/p' "$HERE/../scripts/release.sh") "
+missing=""
+for item in $deployed; do [[ $shipped == *" $item "* ]] || missing+=" $item"; done
+[[ -n $deployed && -z $missing ]] && pass "a release ships everything deploy.sh installs" || fail "release.sh would leave out:${missing:- (the lists could not be read)}"
 
 echo
 echo "PID files"
@@ -347,6 +368,13 @@ ln -s /etc/hostname "$TMP/recipe/sneaky.patch"
 rm "$TMP/recipe/sneaky.patch"
 mkdir "$TMP/recipe/sub"
 (build_reviewed "$TMP/recipe" </dev/null >/dev/null 2>&1) && fail "a recipe with a subfolder is refused" || pass "a recipe with a subfolder is refused"
+rmdir "$TMP/recipe/sub"
+mkdir "$TMP/builds"
+out=$(TMPDIR="$TMP/builds" YES=1 build_reviewed "$TMP/recipe" </dev/null 2>&1)
+[[ $out == *"Not installed"* ]] && pass "--yes never answers the build question" || fail "--yes skipped the recipe review (${out##*$'\n'})"
+[[ -z $(ls -A "$TMP/builds") ]] && pass "the private build folder is removed when the build is declined" || fail "a build folder was left behind"
+grep -qx 'KillMode=mixed' "$HERE/../systemd/omarchy-tablet-mode.service" &&
+  pass "stopping the service signals the daemon first (KillMode=mixed)" || fail "the unit kills wvkbd before the daemon can hide it"
 
 echo
 echo "Menu entries"
@@ -379,6 +407,39 @@ cp "$MENU" "$TMP/menu3.damaged"
 menu_remove 2>/dev/null && fail "a damaged block is refused" || pass "a damaged block is refused"
 cmp -s "$MENU" "$TMP/menu3.damaged" && pass "and the file is left alone (nothing deleted to the end)" || fail "damaged block: file was changed"
 [[ -f $MENU.tablet-mode.bak ]] && cmp -s "$MENU.tablet-mode.bak" "$TMP/menu.orig" && pass "original kept as a backup" || fail "no backup"
+
+mkdir -p "$TMP/cwd"
+echo 'open("PWNED", "w")' >"$TMP/cwd/json.py"
+(cd "$TMP/cwd" && jsonc_ok "$TMP/menu.orig") && [[ ! -e $TMP/cwd/PWNED ]] &&
+  pass "jsonc_ok never imports modules from the current folder" || fail "jsonc_ok ran a json.py from the current folder"
+
+# The user adds an entry after our block, relying on the comma inside it.
+printf '{\n  "a.x": {"label":"A"}\n}\n' >"$MENU"
+menu_add
+sed -i '/<<< tablet-mode/a\  "b.x": {"label":"B"}' "$MENU"
+menu_remove >/dev/null
+jsonc_ok "$MENU" && pass "removal keeps the file parseable when a later entry needs our comma" || fail "removal broke the menu file"
+grep -q '"b.x"' "$MENU" && ! grep -q 'tablet-mode' "$MENU" && pass "the user's later entry stays, our entries go" || fail "removal lost the user's entry or left ours"
+
+menu_add
+sed -i '0,/"a.x"/s//"a.x" BROKEN/' "$MENU"
+cp "$MENU" "$TMP/menu4.broken"
+menu_remove >/dev/null && fail "removal that can't leave a valid file is refused" || pass "removal that can't leave a valid file is refused"
+cmp -s "$MENU" "$TMP/menu4.broken" && pass "and the file is left alone" || fail "an unparseable result was written"
+
+# A dotfiles manager's symlink stays a link, and its target is what's edited and backed up.
+MENU="$TMP/links/omarchy-menu.jsonc"
+mkdir -p "$TMP/links" "$TMP/dotfiles"
+printf '{\n  "a.x": {"label":"A"},\n}\n' >"$TMP/dotfiles/menu.jsonc"
+cp "$TMP/dotfiles/menu.jsonc" "$TMP/menu5.orig"
+ln -s "$TMP/dotfiles/menu.jsonc" "$MENU"
+menu_add
+[[ -f $MENU.tablet-mode.bak && ! -L $MENU.tablet-mode.bak ]] && cmp -s "$MENU.tablet-mode.bak" "$TMP/menu5.orig" &&
+  pass "a symlinked menu is backed up by its contents" || fail "the backup of a symlinked menu is a link"
+grep -q 'tablet-mode' "$TMP/dotfiles/menu.jsonc" && pass "entries are added to the link's target" || fail "the link's target wasn't edited"
+menu_remove
+[[ -L $MENU ]] && pass "removal leaves the symlink a symlink" || fail "removal replaced the symlink with a file"
+cmp -s "$TMP/dotfiles/menu.jsonc" "$TMP/menu5.orig" && pass "and the target is back exactly as it was" || fail "our entries stayed in the dotfiles copy"
 
 echo
 rm -rf "$TMP"

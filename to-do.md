@@ -60,6 +60,29 @@ The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy 
 - [ ] `tablet-mode disable` while rotated → `doctor` passes; `disable --full` → `doctor --full`; `enable` brings everything back.
 - [ ] `kill -9` the daemon while rotated → `ExecStopPost` restores landscape.
 
+## Third security review, pre-release (2026-10-19): fixed, needs hardware testing
+
+A subagent's read-only review of the whole repo found no Critical, High or Medium issues. The root boundary, Lua injection, process control and the lock screen all hold. Every finding is fixed on `security-review-fixes` (off `develop`), with 19 new tests (144 passing). The 13 behaviour tests fail against the old code.
+- **Low:**
+  - `jsonc_ok` imported modules from the current folder (`python3 -I` now);
+  - `menu_remove` could leave the menu unparseable (now checked, keeping a needed comma);
+  - a symlinked menu was replaced by a file and its backup was a link;
+  - the service's stop SIGTERM killed wvkbd before it could hide (`KillMode=mixed`).
+- **Info:**
+  - an empty `cmd` event killed the daemon;
+  - `08` in the config was read as bad octal;
+  - `tweaks_record_ok` let Lua `f{...}` calls through;
+  - the recipe's plain-file check ran on the source, not the copy, `--yes` skipped the build question, and Ctrl-C left the build folder;
+  - `uninstall` ran `rm -rf` on override paths;
+  - deploy's unit write, and the widget's `/tmp` fallback;
+  - a flaky `grep -q` under `pipefail`.
+- **Release hygiene:**
+  - the patch count, licences (`GPL-3.0-only MIT`, upstream's licence files installed, SPDX headers on the patches; wvkbd-deskus 0.20-5);
+  - README links to dev files;
+  - `scripts/release.sh`, so `main` ships only runtime files.
+- [ ] Rebuild the keyboard (`tablet-mode install`, 0.20-4 → 0.20-5) and run the tablet-mode checks.
+- [ ] `systemctl --user restart omarchy-tablet-mode` while holding F9 on the on-screen keyboard → no stuck key (the open question behind the `KillMode` finding).
+
 ## Second security review (2026-10-05): fixed
 
 No high findings, and the auth boundary is intact.

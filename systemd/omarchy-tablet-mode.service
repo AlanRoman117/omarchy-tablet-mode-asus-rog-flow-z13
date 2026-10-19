@@ -13,6 +13,11 @@ ExecStart=@BIN@ daemon
 # Whatever ends the daemon (stop, crash, kill -9), the screen goes back to landscape,
 # the on-screen keyboard closes and Hyprland's own settings return.
 ExecStopPost=@BIN@ restore --quiet
+# Stop signals go to the daemon alone, so it hides the on-screen keyboard (which lets go of a
+# held key) before killing it. wvkbd has no SIGTERM handler, so with the default (SIGTERM
+# to every process at once) it could die with a key still pressed. Anything still running after
+# ExecStopPost is killed.
+KillMode=mixed
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes
