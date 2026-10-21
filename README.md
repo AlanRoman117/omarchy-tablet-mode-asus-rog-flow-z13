@@ -2,7 +2,7 @@
 
 Take the keyboard off a detachable and Omarchy turns into a tablet. The screen follows the accelerometer, an on-screen keyboard appears, and window gaps and border grab areas get bigger for fingers. Put the keyboard back and it's a laptop again. One switch turns the whole plugin off and returns the system to plain Omarchy.
 
-**Tested so far on one machine only: ASUS ROG Flow Z13 (GZ302EA), Omarchy 4.0.5 (Qt 6.12), Hyprland 0.56.2.** Other detachables and convertibles should work after setting their keyboard's USB id and running `calibrate`.
+**Tested so far on one machine only: ASUS ROG Flow Z13 (GZ302EA), Omarchy 4.0.6 (Qt 6.12), Hyprland 0.56.2.** Other detachables and convertibles should work after setting their keyboard's USB id and running `calibrate`.
 
 <p align="center">
   <img src="docs/screenshots/tablet-landscape.png" width="62%" alt="Tablet mode in landscape on the Osaka Jade theme: an empty workspace with the US on-screen keyboard across the bottom half and the floating keyboard button just above it">
@@ -43,8 +43,8 @@ Then click the dimmed laptop icon in the bar. The card walks you through setup:
    - An `--output` option, so the keyboard stays on the laptop screen when you're docked.
 
    It shows you every file of the recipe and asks before building (even with `--yes`). The build runs from that same private copy (plain files only, so nothing can change after you've read it), and makepkg checks the upstream source against its pinned checksum.
-2. **Not a Z13?** Before finishing setup, put your detachable keyboard's USB id in `~/.config/omarchy/tablet-mode.conf` (`keyboard=vendor:product`, from `lsusb`), or `keyboard=none` to switch modes by hand only. A keyboard id that has never been present on your machine doesn't switch modes, so the default can't put a different laptop into tablet mode; `tablet-mode doctor` says when that's the case.
-3. **Finish setup** starts the service, adds the menu entries and installs a theme hook.
+2. **Finish setup** starts the service, adds the menu entries and installs a theme hook. It also writes the settings file, `~/.config/omarchy/tablet-mode.conf`.
+3. **Not a Z13?** Set your detachable keyboard's USB id in that file (`keyboard=vendor:product`, from `lsusb`), or `keyboard=none` to switch modes by hand only. Then run `systemctl --user restart omarchy-tablet-mode`. Until you do, nothing switches on its own: a keyboard id that has never been present on your machine is ignored, so the Z13 default can't put a different laptop into tablet mode. `tablet-mode doctor` tells you when that's the case.
 4. **Calibrate** only if the screen turns the wrong way (on the card, or `tablet-mode calibrate`). It needs two poses, and you confirm the picture is the right way up. The Z13 doesn't need it.
 
 Adding a plugin to Omarchy only copies its files; installing packages needs your password, which is why setup is a step you start yourself. From a terminal, the same steps are `tablet-mode install`, `tablet-mode enable` and `tablet-mode calibrate`. After `enable`, `tablet-mode` is on your PATH through `~/.local/bin`.
@@ -148,7 +148,7 @@ After editing, run `systemctl --user restart omarchy-tablet-mode`.
 
 - `monitor-sensor` for orientation, running only while auto-rotation is active;
 - `udevadm monitor` for USB add and remove;
-- Hyprland's event socket for config reloads and monitors being added;
+- Hyprland's event socket for config reloads and monitors being added or removed;
 - `gdbus monitor` on logind's `PrepareForSleep`, paired with a delay lock, so the accelerometer and keyboard are released before suspend.
 
 Rotations replay the panel's live mode, position and scale with the new transform (a transform-only rule resets the scale), and set each touch and pen device's transform explicitly. State goes to `$XDG_RUNTIME_DIR/omarchy-tablet-mode/state.json`, which the card watches.

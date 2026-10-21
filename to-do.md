@@ -40,7 +40,7 @@ The user declined the alternatives:
 
 The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy discussion #14341 (https://github.com/omacom/omarchy/discussions/14341); the text is in `docs/upstream/lock-screen-touch-input.md`. Watch it for replies.
 
-## Docked tablet mode (2026-10-06): built and dry-run tested (119 passing); needs the Z13 dock
+## Docked tablet mode (2026-10-06): done
 
 - [x] Docked, keyboard off, laptop screen off: no keyboard on HDMI, and `tablet-mode status` says desk (user, 2026-10-06).
 - [x] Found while checking that: the gaps were stuck at the tweak values (8/14). The record of the originals had been retaken after a reload that left our tweaks in place. Fixed: the record is never retaken, there's a guard and a baseline, and records are validated. The user's values were reset to 5/10 by hand.
@@ -49,18 +49,18 @@ The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy 
 - Note (2026-10-06): a Quickshell crash during a dev deploy was the shell restart racing the plugin hot-reload burst (an upstream Quickshell bug, also in omacom/omarchy#8647). deploy.sh now waits before restarting. No user data was involved.
 - [x] Laptop screen off again: desk mode; gaps back to 5/10 and to 8/14 when it's on (checked from the log and getoption, 2026-10-06).
 - [x] Reattach the keyboard: laptop mode, landscape, gaps 5/10, no live-change records left, layout unchanged (user + checked, 2026-10-06).
-- [ ] `tablet-mode doctor`: "can turn sideways without overlapping"; no config notes.
+- [x] `tablet-mode doctor`: "can turn sideways without overlapping", no config notes (docked, 2026-10-20).
 
 ## Hardware checks still to run (Z13)
 
 - [x] Detach / attach, notifications, the keyboard appearing, all four poses, touch and pen (2026-10-05). Default mapping is correct; no calibration needed.
 - [ ] `hyprctl reload` while rotated keeps the rotation.
 - [ ] Suspend and resume in tablet mode (see the open issue above); a reboot with the keyboard detached.
-- [ ] Docked to HDMI: the external monitor is never rotated, and eDP-1 stays at `320x1080` after reattaching.
-- [ ] `tablet-mode disable` while rotated → `doctor` passes; `disable --full` → `doctor --full`; `enable` brings everything back.
+- [x] Docked to HDMI: the external monitor is never rotated, and eDP-1 stays at `320x1080` after reattaching (checked through the 2026-10-20 rotation tests and the user's detach/attach).
+- [~] `disable --full` then `enable`: entries and bar icon removed and restored (user, 2026-10-19). Still to do: `disable` while rotated → `doctor`, and `doctor --full` after `disable --full`.
 - [ ] `kill -9` the daemon while rotated → `ExecStopPost` restores landscape.
 
-## Pre-submission review of v0.1.0 (2026-10-20): fixed on `pre-submission-fixes`, for v0.1.1
+## Pre-submission review of v0.1.0 (2026-10-20): fixed, released in v0.1.1
 
 A subagent's read-only review of the release and `develop` found no Critical or High issues. The root boundary, injection, process control, the lock screen and the C patches hold. Submission was blocked by a private repo (the user's to change) and by M1. 16 new tests (161 passing); the 11 behaviour tests fail against `develop`.
 - **M1 (functional):** on any machine that isn't a Z13, the default keyboard id read as detached, so tablet mode came on at `enable` and at every login. Now an id never present on the machine is `unknown`. The README tells non-Z13 users to set theirs before finishing setup.
@@ -73,9 +73,10 @@ A subagent's read-only review of the release and `develop` found no Critical or 
 - [x] Installed 0.20-7; the on-screen keyboard works, holding F9 included (user, 2026-10-20).
 - [x] `doctor` recorded the Z13 keyboard as seen; detaching it still enters tablet mode (user, 2026-10-20).
 - [x] L2 checked live: a live 10-bit setting survived `rotate 90` and `rotate normal`. The panel was put back exactly (8-bit, VRR off, unlocked).
-- [ ] Make the repo public (the user), release v0.1.1, then submit.
+- [x] v0.1.1 released and the repo made public (2026-10-20).
+- [ ] Release v0.1.2 (marketplace preview image, listing name "Tablet Mode (ROG Flow Z13)"), then submit to the marketplace (the draft passed its validator; the security baseline is `review-required` with no findings).
 
-## Third security review, pre-release (2026-10-19): fixed, needs hardware testing
+## Third security review, pre-release (2026-10-19): fixed and verified on the Z13, released in v0.1.0
 
 A subagent's read-only review of the whole repo found no Critical, High or Medium issues. The root boundary, Lua injection, process control and the lock screen all hold. Every finding is fixed on `security-review-fixes` (off `develop`), with 19 new tests (144 passing). The 13 behaviour tests fail against the old code.
 - **Low:**
@@ -126,8 +127,6 @@ Minor items fixed too: no glob expansion of commands, the sleep signal is matche
 
 ## Later
 
-- **Next (the user's plan, 2026-10-05):** wait for replies on omacom/omarchy discussion #14341. Any follow-up work depends on them, then prepare the plugin submission.
-- Going public (decided by the user):
-  - The commit author email (alan.roman117@gmail.com) is fine to publish; the user confirmed this 2026-10-05, so no history rewrite is needed.
-  - Optionally trim this file and CLAUDE.md, which are internal notes.
+- Watch omacom/omarchy discussion #14341 (touch input on the lock screen); no replies as of 2026-10-20.
+- Public since 2026-10-20. The commit author email (alan.roman117@gmail.com) is fine to publish (the user confirmed 2026-10-05). This file and CLAUDE.md stay on `develop` and never ship (`release.sh`).
 - Touch gestures (hyprgrass), as a possible v2.
