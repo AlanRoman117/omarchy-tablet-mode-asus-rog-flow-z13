@@ -31,6 +31,8 @@ EOF
   export TABLET_MODE_DRYRUN=1 TABLET_MODE_FIXTURES="$TMP/fixtures" TABLET_MODE_RUN_DIR="$TMP/run"
   export TABLET_MODE_CONF="$TMP/tablet-mode.conf" TABLET_MODE_LOG="$TMP/log" XDG_CONFIG_HOME="$TMP/config"
   export TABLET_MODE_BASELINE="$TMP/state/omarchy-tablet-mode/baseline.lua"
+  # Omarchy's menu, hooks and shell.json live in ~/.config/omarchy whatever XDG_CONFIG_HOME says.
+  export TABLET_MODE_OMARCHY_CONFIG="$TMP/config/omarchy"
 }
 
 start() {
@@ -190,6 +192,29 @@ setup "enabled=false"
 is "disabled: the daemon exits at once" "$?" 0
 [[ ! -e $TMP/run/events ]] && pass "disabled: nothing created" || fail "disabled daemon left files"
 "$CLI" on 2>/dev/null && fail "disabled: on refuses" || pass "disabled: on refuses"
+setup
+echo unknown >"$TMP/fixtures/keyboard"
+start
+is "keyboard unknown (never seen here): starts in laptop mode" "$(state .mode)" laptop
+stop
+
+echo
+echo "Keyboard detection (a machine that isn't a Z13)"
+setup
+source "$CLI"
+load_config
+FIXTURES="" USB_DEVICES="$TMP/usb"
+usb() { mkdir -p "$TMP/usb/$1" && echo "$2" >"$TMP/usb/$1/idVendor" && echo "$3" >"$TMP/usb/$1/idProduct"; }
+usb 1-1 1234 abcd
+is "the default id, never present here: unknown, not detached" "$(keyboard_state)" unknown
+[[ ! -e $KBD_SEEN ]] && pass "an absent id isn't recorded as seen" || fail "an absent id was recorded"
+usb 1-2 0b05 1a30
+is "the keyboard present: attached" "$(keyboard_state)" attached
+grep -qx 0b05:1a30 "$KBD_SEEN" && pass "and recorded as seen on this machine" || fail "an attached keyboard wasn't recorded"
+rm -rf "$TMP/usb/1-2"
+is "seen before, now gone: detached" "$(keyboard_state)" detached
+CFG[keyboard]=none
+is "keyboard=none: unknown (toggle only)" "$(keyboard_state)" unknown
 
 echo
 echo "Docked: desk mode, the laptop screen coming back, keyboard placement"
@@ -303,6 +328,19 @@ echo "hl.config({ general = { gaps_in = { top = 5, right = 5, bottom = 5, left =
 tweaks_record_ok "$TMP/good.lua" && pass "a genuine record is accepted" || fail "a genuine record was refused"
 
 echo
+echo "Touchscreens"
+setup
+source "$CLI"
+load_config
+is "one touchscreen: it and its pen, not other tablets" "$(touch_devices | xargs)" "elan9008:00-04f3:43c7 elan9008:00-04f3:43c7-stylus"
+jq '.touch += [{"name": "ext-touch-monitor"}]' "$TMP/fixtures/devices.json" >"$TMP/d.json" && mv "$TMP/d.json" "$TMP/fixtures/devices.json"
+is "several touchscreens, auto: none (it can't tell which is built in)" "$(touch_devices | xargs)" ""
+CFG[touch_devices]=elan9008:00-04f3:43c7
+is "touch_devices names the built-in one: it and its pen" "$(touch_devices | xargs)" "elan9008:00-04f3:43c7 elan9008:00-04f3:43c7-stylus"
+CFG[touch_devices]='nope,"x'
+is "a name that matches nothing: none" "$(touch_devices | xargs)" ""
+
+echo
 echo "Orientation mapping"
 setup
 # shellcheck source=../bin/tablet-mode
@@ -375,6 +413,12 @@ out=$(TMPDIR="$TMP/builds" YES=1 build_reviewed "$TMP/recipe" </dev/null 2>&1)
 [[ -z $(ls -A "$TMP/builds") ]] && pass "the private build folder is removed when the build is declined" || fail "a build folder was left behind"
 grep -q 'wl_callback_destroy(popup_draw_surf.frame_cb)' "$HERE/../packaging/wvkbd-deskus/hold-until-release.patch" &&
   pass "hiding cancels the key popup's frame callback (wvkbd crashed without it)" || fail "the hold patch no longer cancels the popup's frame callback"
+grep -q 'wl_display_flush(display);' "$HERE/../packaging/wvkbd-deskus/hold-until-release.patch" &&
+  pass "a keyboard the compositor closes is torn down through hide() (key released, flushed)" || fail "the close handler fix is missing from the hold patch"
+grep -qx '  \[\[ \$name == .git \]\] && continue' "$HERE/../scripts/deploy.sh" &&
+  pass "deploy keeps a plugin checkout's .git" || fail "deploy would delete .git from the plugin folder"
+grep -q '^    sudo pacman -Rns wvkbd-deskus$' "$CLI" && ! grep -q 'pacman -Qq iio-sensor-proxy wvkbd wvkbd-deskus' "$CLI" &&
+  pass "uninstall --packages removes only the keyboard the plugin built" || fail "uninstall --packages removes packages the plugin didn't install"
 grep -qx 'KillMode=mixed' "$HERE/../systemd/omarchy-tablet-mode.service" &&
   pass "stopping the service signals the daemon first (KillMode=mixed)" || fail "the unit kills wvkbd before the daemon can hide it"
 
@@ -428,6 +472,11 @@ sed -i '0,/"a.x"/s//"a.x" BROKEN/' "$MENU"
 cp "$MENU" "$TMP/menu4.broken"
 menu_remove >/dev/null && fail "removal that can't leave a valid file is refused" || pass "removal that can't leave a valid file is refused"
 cmp -s "$MENU" "$TMP/menu4.broken" && pass "and the file is left alone" || fail "an unparseable result was written"
+
+grep -qF "\"$SELF status" <<<"$(menu_block)" && ! grep -qF "$LINK" <<<"$(menu_block)" &&
+  pass "menu entries call the plugin's own script, not ~/.local/bin" || fail "menu entries go through ~/.local/bin/tablet-mode"
+paths=$(env -u TABLET_MODE_OMARCHY_CONFIG XDG_CONFIG_HOME=/elsewhere bash -c 'source "$1"; echo "$MENU|$HOOK|$SHELL_JSON"' _ "$CLI")
+is "Omarchy's files follow ~/.config/omarchy, not XDG_CONFIG_HOME" "$paths" "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc|$HOME/.config/omarchy/hooks/theme-set.d/tablet-mode.sh|$HOME/.config/omarchy/shell.json"
 
 # A dotfiles manager's symlink stays a link, and its target is what's edited and backed up.
 MENU="$TMP/links/omarchy-menu.jsonc"

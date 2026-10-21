@@ -26,6 +26,8 @@ done
 for path in "$DEST"/* "$DEST"/.[!.]*; do
   [[ -e $path ]] || continue
   name=$(basename "$path")
+  # A git checkout's .git (an `omarchy plugin add` install) is what `omarchy plugin update` needs.
+  [[ $name == .git ]] && continue
   [[ " ${FILES[*]} " == *" $name "* ]] || rm -rf "$path"
 done
 echo "Deployed to $DEST"

@@ -15,8 +15,9 @@ ExecStart=@BIN@ daemon
 ExecStopPost=@BIN@ restore --quiet
 # Stop signals go to the daemon alone, so it hides the on-screen keyboard (which lets go of a
 # held key) before killing it. wvkbd has no SIGTERM handler, so with the default (SIGTERM
-# to every process at once) it could die with a key still pressed. Anything still running after
-# ExecStopPost is killed.
+# to every process at once) it could die with a key still pressed. ExecStopPost runs while
+# anything left over (after a kill -9 of the daemon, say) is still alive, so restore can hide
+# it too; it's killed after that (measured on systemd 262).
 KillMode=mixed
 Restart=on-failure
 RestartSec=3

@@ -1,5 +1,5 @@
 SPDX-License-Identifier: GPL-3.0-only
-A held key stays down until the finger lifts; it's released on touch-cancel and on hide, and hide cancels the key popup's pending frame callback.
+A held key stays down until the finger lifts; it's released on touch-cancel, on hide and when the compositor closes the keyboard, with no frame callback or surface outliving it.
 Part of the wvkbd-deskus recipe in alanroman117.tablet-mode; derived from wvkbd 0.20
 (https://git.sr.ht/~proycon/wvkbd), whose COPYING puts it under the GPL v3.0.
 
@@ -32,7 +32,23 @@ Part of the wvkbd-deskus recipe in alanroman117.tablet-mode; derived from wvkbd 
  }
  
  void
-@@ -723,6 +728,11 @@
+@@ -644,8 +649,13 @@
+ void
+ layer_surface_closed(void *data, struct zwlr_layer_surface_v1 *surface)
+ {
+-    zwlr_layer_surface_v1_destroy(surface);
+-    wl_surface_destroy(draw_surf.surf);
++    // omarchy-tablet-mode: the compositor closed the keyboard (its output went away, say).
++    // Tear down through hide(): it lets go of a held key while the surfaces still exist,
++    // cancels pending frame callbacks and clears every pointer, so a SIGUSR1 handled in the
++    // same loop pass finds nothing to draw on or destroy twice. Then flush, because the
++    // loop that would have sent the key release ends here.
++    hide();
++    wl_display_flush(display);
+     run_display = false;
+ }
+ 
+@@ -723,6 +733,11 @@
          return;
      }
  
@@ -44,7 +60,7 @@ Part of the wvkbd-deskus recipe in alanroman117.tablet-mode; derived from wvkbd 
      if (wfs_draw_surf) {
          wp_fractional_scale_v1_destroy(wfs_draw_surf);
          wfs_draw_surf = NULL;
-@@ -739,6 +749,13 @@
+@@ -739,6 +754,13 @@
          xdg_surface_destroy(popup_xdg_surface);
          popup_xdg_surface = NULL;
      }
