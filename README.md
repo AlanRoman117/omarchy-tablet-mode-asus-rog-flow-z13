@@ -27,6 +27,7 @@ External monitors are never rotated. Your `monitors.lua` is never edited: every 
 - Omarchy 4 (Hyprland with Lua config).
 - An accelerometer that iio-sensor-proxy can read (`ls /sys/bus/iio/devices/*/in_accel_x_raw`).
 - For automatic tablet mode, a keyboard that appears and disappears as a USB device. The Z13's is `0b05:1a30`.
+- Tools it uses, all part of a standard Omarchy install: `jq`, `socat`, `python3` (to edit the menu file safely) and `base-devel` (to build the on-screen keyboard). Setup adds `iio-sensor-proxy` and builds `wvkbd-deskus`.
 
 ## Install
 
@@ -42,10 +43,11 @@ Then click the dimmed laptop icon in the bar. The card walks you through setup:
    - An `--output` option, so the keyboard stays on the laptop screen when you're docked.
 
    It shows you every file of the recipe and asks before building (even with `--yes`). The build runs from that same private copy (plain files only, so nothing can change after you've read it), and makepkg checks the upstream source against its pinned checksum.
-2. **Finish setup** starts the service, adds the menu entries and installs a theme hook.
-3. **Calibrate** only if the screen turns the wrong way (on the card, or `tablet-mode calibrate`). It needs two poses, and you confirm the picture is the right way up. The Z13 doesn't need it.
+2. **Not a Z13?** Before finishing setup, put your detachable keyboard's USB id in `~/.config/omarchy/tablet-mode.conf` (`keyboard=vendor:product`, from `lsusb`), or `keyboard=none` to switch modes by hand only. A keyboard id that has never been present on your machine doesn't switch modes, so the default can't put a different laptop into tablet mode; `tablet-mode doctor` says when that's the case.
+3. **Finish setup** starts the service, adds the menu entries and installs a theme hook.
+4. **Calibrate** only if the screen turns the wrong way (on the card, or `tablet-mode calibrate`). It needs two poses, and you confirm the picture is the right way up. The Z13 doesn't need it.
 
-Omarchy's plugin installer never runs code or sudo, which is why setup is a step you start yourself. From a terminal, the same steps are `tablet-mode install`, `tablet-mode enable` and `tablet-mode calibrate`. After `enable`, `tablet-mode` is on your PATH through `~/.local/bin`.
+Adding a plugin to Omarchy only copies its files; installing packages needs your password, which is why setup is a step you start yourself. From a terminal, the same steps are `tablet-mode install`, `tablet-mode enable` and `tablet-mode calibrate`. After `enable`, `tablet-mode` is on your PATH through `~/.local/bin`.
 
 ## The card
 
@@ -81,7 +83,7 @@ tablet-mode doctor --full     # proves it: no processes, no rotation, no tweaks,
 tablet-mode enable            # all back
 ```
 
-`disable` keeps the bar icon, dimmed, with a **Turn on** button. A menu entry (**Tablet Mode Plugin**) does the same. Packages stay installed and idle: iio-sensor-proxy only starts when something asks for the accelerometer, and wvkbd doesn't run. `tablet-mode uninstall --packages` removes them too.
+`disable` keeps the bar icon, dimmed, with a **Turn on** button. A menu entry (**Tablet Mode Plugin**) does the same. Packages stay installed and idle: iio-sensor-proxy only starts when something asks for the accelerometer, and wvkbd doesn't run. `tablet-mode uninstall --packages` also removes `wvkbd-deskus`, the keyboard the plugin built; it leaves `iio-sensor-proxy` and the AUR `wvkbd`, which other things may use, and says how to remove them.
 
 Your own settings (gaps and border grab area) are recorded once, when the touch tweaks first go on. A copy of the last clean record is kept in `~/.local/state/omarchy-tablet-mode/baseline.lua`. If Hyprland ever still holds the tweak values when a new record is due, that copy is used instead, so a restore always returns your real values.
 
@@ -93,8 +95,9 @@ If the service crashes or is killed, its `ExecStopPost` runs `tablet-mode restor
 
 | Key | Default | |
 |---|---|---|
-| `keyboard` | `0b05:1a30` | USB `vendor:product` of the detachable keyboard (`lsusb`); `none` = toggle only |
+| `keyboard` | `0b05:1a30` | USB `vendor:product` of the detachable keyboard (`lsusb`); the default is the Z13's. An id never present on this machine doesn't switch modes until it's been attached once. `none` = toggle only |
 | `output` | `auto` | Built-in display (first `eDP`/`LVDS`/`DSI`) |
+| `touch_devices` | `auto` | Touchscreens turned with the display. `auto` takes the only one there is; with several (an external touch monitor), name the built-in one(s), comma-separated, as `hyprctl devices` lists them. Pens named after them follow |
 | `auto_rotate`, `show_keyboard`, `touch_tweaks`, `notify` | `true` | What tablet mode does |
 | `orientation_offset`, `orientation_mirror` | `0`, `false` | Set by `calibrate` |
 | `debounce_ms` | `400` | How long an orientation must hold before the screen turns |
@@ -122,6 +125,7 @@ After editing, run `systemctl --user restart omarchy-tablet-mode`.
 ## Limitations
 
 - **Unlocking needs the keyboard.** Omarchy's lock screen (shown after suspend or idle) covers everything, including the on-screen keyboard. With the keyboard detached there's no way to type your password: reattach it to unlock, then detach again. This is deliberate. The plugin stays out of authentication: it doesn't modify or replace the lock screen, so it adds nothing to what someone holding your tablet could get past. Touch input on the lock screen belongs in Omarchy itself.
+- **Turning the screen reapplies its monitor rule** with the live mode, position and scale. Settings from your Hyprland config (bit depth, colour preset, VRR) stay; ones you changed live with `hyprctl` may go back to the config's until the next reload. `doctor` mentions it when the laptop screen runs 10-bit colour, a colour preset other than sRGB, or VRR.
 
 ## Good to know
 
