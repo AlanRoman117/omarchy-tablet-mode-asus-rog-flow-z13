@@ -9,7 +9,7 @@
 
 set -uo pipefail
 
-VERSION=0.1.0
+VERSION=0.1.1
 PLUGIN_ID="alanroman117.tablet-mode"
 SELF="$(readlink -f "$0")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
@@ -29,13 +29,20 @@ TWEAKS="$RUN_DIR/tweaks.lua"         # hl.config(...) that puts the pre-tweak va
 # The last clean record of the user's own values, kept across sessions: used when the live
 # values can't be trusted because they already look like our tweaks.
 BASELINE="${TABLET_MODE_BASELINE:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-tablet-mode/baseline.lua}"
+# Detachable keyboards seen on this machine (USB ids), so an id that has never been present
+# reads as "unknown" (no auto-switching) rather than "detached" (tablet mode at once).
+KBD_SEEN="$(dirname "$BASELINE")/keyboards-seen"
+USB_DEVICES="${TABLET_MODE_USB_DEVICES:-/sys/bus/usb/devices}"
 UNIT="omarchy-tablet-mode.service"
 UNIT_FILE="$CONFIG_HOME/systemd/user/$UNIT"
-MENU="$CONFIG_HOME/omarchy/extensions/omarchy-menu.jsonc"
+# Omarchy reads its menu extension, hooks and shell.json from ~/.config/omarchy whatever
+# XDG_CONFIG_HOME says, so these follow it there (the tests point them elsewhere).
+OMARCHY_CONFIG="${TABLET_MODE_OMARCHY_CONFIG:-$HOME/.config/omarchy}"
+MENU="$OMARCHY_CONFIG/extensions/omarchy-menu.jsonc"
 MENU_BEGIN="// >>> tablet-mode: managed by $PLUGIN_ID (tablet-mode disable --full removes this block)"
 MENU_END="// <<< tablet-mode"
-HOOK="$CONFIG_HOME/omarchy/hooks/theme-set.d/tablet-mode.sh"
-SHELL_JSON="$CONFIG_HOME/omarchy/shell.json"
+HOOK="$OMARCHY_CONFIG/hooks/theme-set.d/tablet-mode.sh"
+SHELL_JSON="$OMARCHY_CONFIG/shell.json"
 LINK="$HOME/.local/bin/tablet-mode"
 THEME_COLORS="$HOME/.local/state/omarchy/current/theme/colors.toml"
 # On-screen keyboards, preferred first: the US desktop layout built from packaging/wvkbd-deskus,
@@ -67,6 +74,7 @@ declare -A CFG=(
   [osk_height_landscape]=420
   [osk_height_portrait]=420
   [osk]=auto
+  [touch_devices]=auto
 )
 
 load_config() {
@@ -96,11 +104,17 @@ write_default_config() {
 enabled=true
 
 # USB id of the detachable keyboard (vendor:product, from lsusb). Detached = tablet mode.
-# "none" turns detection off; then only the toggle switches modes.
+# The default is the ROG Flow Z13's; set yours. An id never seen on this machine doesn't
+# switch modes until it's been attached once. "none" turns detection off (toggle only).
 keyboard=0b05:1a30
 
 # Built-in display; "auto" picks the first eDP/LVDS/DSI output.
 output=auto
+
+# Touchscreens turned with the display: "auto" takes the only one there is. With several
+# (an external touch monitor), list the built-in one(s), comma-separated, as hyprctl devices
+# names them; until then touch isn't turned.
+touch_devices=auto
 
 # What tablet mode does.
 auto_rotate=true
@@ -316,9 +330,18 @@ rotate_to() {
 }
 
 # Touchscreen digitizers plus their pens (tablet devices named after a touchscreen).
+# The touchscreens turned with the panel, and the pens named after them. "auto" takes the
+# only touchscreen there is; with several (an external touch monitor, say) it can't tell
+# which is built in, so it takes none and touch_devices= has to name them (comma-separated).
 touch_devices() {
-  hypr_json devices | jq -r '[.touch[]?.name] as $t | ($t[]), (.tablets[]?.name | select(. as $n | any($t[]; . as $p | $n | startswith($p))))'
+  hypr_json devices | jq -r --arg want "${CFG[touch_devices]}" '
+    [.touch[]?.name] as $all
+    | (if $want == "auto" then (if ($all | length) == 1 then $all else [] end)
+       else [$want | split(",")[] | select(. != "") as $n | $all[] | select(. == $n)] end) as $t
+    | ($t[]), (.tablets[]?.name | select(. as $n | any($t[]; . as $p | $n | startswith($p))))'
 }
+
+all_touchscreens() { hypr_json devices | jq -r '.touch[]?.name'; }
 
 # Hyprland doesn't reliably carry an output's transform over to touch input, so set it per device.
 map_touch() {
@@ -707,11 +730,28 @@ keyboard_state() {
   if [[ -n $FIXTURES ]]; then cat "$FIXTURES/keyboard" 2>/dev/null || echo attached; return; fi
   local want=${CFG[keyboard],,} dev
   [[ $want =~ ^[0-9a-f]{4}:[0-9a-f]{4}$ ]] || { echo unknown; return; }
-  for dev in /sys/bus/usb/devices/*; do
+  for dev in "$USB_DEVICES"/*; do
     [[ -f $dev/idVendor && -f $dev/idProduct ]] || continue
-    [[ "$(<"$dev/idVendor"):$(<"$dev/idProduct")" == "$want" ]] && { echo attached; return; }
+    if [[ "$(<"$dev/idVendor"):$(<"$dev/idProduct")" == "$want" ]]; then
+      keyboard_seen "$want" || { mkdir -p "$(dirname "$KBD_SEEN")" && printf '%s\n' "$want" >>"$KBD_SEEN"; }
+      echo attached
+      return
+    fi
   done
-  echo detached
+  # Absent: detached only if it has been here before. On any other machine the default
+  # (the Z13's id) would otherwise read as detached and turn tablet mode on at every login.
+  if keyboard_seen "$want"; then echo detached; else echo unknown; fi
+}
+
+keyboard_seen() { grep -qxF -- "$1" "$KBD_SEEN" 2>/dev/null; }
+
+# Why the keyboard reads as unknown, and what to do about it.
+keyboard_note() {
+  if [[ ${CFG[keyboard],,} =~ ^[0-9a-f]{4}:[0-9a-f]{4}$ ]]; then
+    note "Keyboard ${CFG[keyboard]} hasn't been seen on this machine, so modes don't switch on their own yet. Attach it once; if that isn't your detachable keyboard's USB id, set keyboard= in $CONF (lsusb shows it). Until then, use the toggle"
+  else
+    note "Keyboard detection is off (keyboard=${CFG[keyboard]}); use the toggle"
+  fi
 }
 
 has_accelerometer() {
@@ -1290,7 +1330,8 @@ EOF
 # menu_block [","]: the entries, optionally led by a lone comma for an entry before them
 # that has none. The comma sits inside the markers, so removing the block removes it too.
 menu_block() {
-  local cli=$LINK
+  # The plugin's own script, not ~/.local/bin/tablet-mode: that name may belong to something else.
+  local cli=$SELF
   echo "  $MENU_BEGIN"
   [[ -n ${1:-} ]] && echo "  ,"
   cat <<EOF
@@ -1412,7 +1453,11 @@ cmd_enable() {
   [[ -z $missing ]] || note "Not installed yet: $missing (run: tablet-mode install); the service skips what's missing"
   install_unit
   mkdir -p "$(dirname "$LINK")"
-  [[ -e $LINK && ! -L $LINK ]] || ln -sfn "$SELF" "$LINK"
+  if [[ -e $LINK && ! -L $LINK ]]; then
+    note "$LINK is someone else's file, so it's left alone: run tablet-mode as $SELF"
+  else
+    ln -sfn "$SELF" "$LINK"
+  fi
   install_hook
   menu_add
   systemctl --user daemon-reload
@@ -1423,7 +1468,7 @@ cmd_enable() {
   if ! plugin_on_bar && command -v omarchy-plugin-enable >/dev/null; then
     omarchy-plugin-enable "$PLUGIN_ID" --section right >/dev/null 2>&1 && ok "Bar icon added"
   fi
-  [[ $(keyboard_state) == unknown ]] && note "Keyboard detection is off (keyboard=${CFG[keyboard]}); use the toggle"
+  [[ $(keyboard_state) == unknown ]] && keyboard_note
   refresh_widget
 }
 
@@ -1507,7 +1552,19 @@ cmd_doctor() {
     [[ $(osk_bin) == wvkbd-deskus ]] || note "Using the phone-style layout; tablet-mode install adds the US desktop one"
     osk_outdated && note "wvkbd-deskus $(osk_installed_version) is older than the plugin's recipe ($(osk_recipe_version)); run: tablet-mode install"
     check "Built-in display found ($(internal_output 2>/dev/null || echo none))" internal_output
-    check "Touchscreen found" test -n "$(touch_devices 2>/dev/null)"
+    local touch all
+    touch=$(touch_devices 2>/dev/null | xargs)
+    all=$(all_touchscreens 2>/dev/null | xargs)
+    if [[ -n $touch ]]; then
+      ok "Touch turned with the screen: $touch"
+    elif [[ -n $all && ${CFG[touch_devices]} == auto ]]; then
+      note "Several touchscreens ($all): set touch_devices= in $CONF to the built-in one(s); until then touch isn't turned with the screen"
+    elif [[ -n $all ]]; then
+      note "touch_devices=${CFG[touch_devices]} matches none of these touchscreens: $all"
+    else
+      bad "Touchscreen found"
+      fails=$((fails + 1))
+    fi
     local panel blocker
     panel=$(internal_output 2>/dev/null)
     if [[ -n $panel ]] && panel_on; then
@@ -1523,7 +1580,9 @@ cmd_doctor() {
     config_notes "$panel"
     check "Service enabled" systemctl --user is-enabled --quiet "$UNIT"
     check "Service running" systemctl --user is-active --quiet "$UNIT"
-    note "Keyboard: $(keyboard_state) (${CFG[keyboard]})"
+    local kbd
+    kbd=$(keyboard_state)
+    if [[ $kbd == unknown ]]; then keyboard_note; else note "Keyboard: $kbd (${CFG[keyboard]})"; fi
   else
     step "Tablet mode is disabled: checking for plain Omarchy"
     check "Service not running" eval '! systemctl --user is-active --quiet "$UNIT" && ! daemon_running >/dev/null'
@@ -1601,7 +1660,7 @@ cmd_uninstall() {
   # Both paths can come from environment overrides (the tests set them), so nothing here
   # deletes a folder that isn't plainly ours.
   [[ $(basename "$RUN_DIR") == omarchy-tablet-mode ]] && rm -rf "$RUN_DIR"
-  rm -f "$BASELINE"
+  rm -f "$BASELINE" "$KBD_SEEN"
   rmdir "$(dirname "$BASELINE")" 2>/dev/null
   if ((MENU_KEPT)); then
     ok "Service and ~/.local/bin/tablet-mode removed"
@@ -1611,10 +1670,15 @@ cmd_uninstall() {
     ok "Service, ~/.local/bin/tablet-mode and the menu backup removed"
   fi
   if [[ -f $CONF ]] && confirm "Delete your settings ($CONF)?"; then rm -f "$CONF" && ok "Settings deleted"; fi
-  if ((packages)) && confirm "Also uninstall iio-sensor-proxy and the on-screen keyboards (sudo)?"; then
-    local installed
-    installed=$(pacman -Qq iio-sensor-proxy wvkbd wvkbd-deskus 2>/dev/null | xargs)
-    [[ -z $installed ]] || sudo pacman -Rns $installed
+  # Only the keyboard this plugin built: iio-sensor-proxy and the AUR wvkbd may have been
+  # there before it, or be used by something else.
+  if ((packages)) && pacman -Q wvkbd-deskus >/dev/null 2>&1 && confirm "Also uninstall wvkbd-deskus, the on-screen keyboard this plugin built (sudo)?"; then
+    sudo pacman -Rns wvkbd-deskus
+  fi
+  if ((packages)); then
+    local others
+    others=$(pacman -Qq iio-sensor-proxy wvkbd 2>/dev/null | xargs)
+    [[ -z $others ]] || note "Left installed: $others. If nothing else needs them: sudo pacman -Rns $others"
   fi
   echo
   echo "The plugin's files are still in $ROOT; remove them with: omarchy plugin remove $PLUGIN_ID"
