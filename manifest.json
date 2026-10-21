@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "alanroman117.tablet-mode",
-  "name": "Tablet Mode",
-  "version": "0.1.1",
+  "name": "Tablet Mode (ROG Flow Z13)",
+  "version": "0.1.2",
   "author": "Alan Roman",
   "license": "MIT",
   "description": "Tablet mode for detachables: auto-rotation, an on-screen keyboard and touch tweaks when the keyboard comes off, and a switch back to plain Omarchy.",
