@@ -65,14 +65,14 @@ The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy 
 A subagent's read-only review of the release and `develop` found no Critical or High issues. The root boundary, injection, process control, the lock screen and the C patches hold. Submission was blocked by a private repo (the user's to change) and by M1. 16 new tests (161 passing); the 11 behaviour tests fail against `develop`.
 - **M1 (functional):** on any machine that isn't a Z13, the default keyboard id read as detached, so tablet mode came on at `enable` and at every login. Now an id never present on the machine is `unknown`. The README tells non-Z13 users to set theirs before finishing setup.
 - **L1:** every touchscreen was mapped to the panel, external touch monitors included. Now only the single built-in one (`auto`), or those named in `touch_devices=`.
-- **L2 (plausible):** rotation might drop live-set bitdepth/cm/vrr. Evidence (#13725) says `hl.monitor` merges with the config rule, so config-set values stay. There's a doctor note and a README limitation instead of replaying fields whose keys and modes we can't read reliably.
+- **L2:** the reviewer thought rotation might drop live-set bitdepth/cm/vrr. Measured on the Z13: it doesn't. `hl.monitor` merges with the live rule, so 10-bit set live survived two plugin rotations. Nothing to fix; a doctor note and README line added for it were taken out again.
 - **I1:** the reviewer said `KillMode=mixed` SIGKILLs leftovers before `ExecStopPost`. Measured with a transient unit: it doesn't, so the unit comment was right; it now says it was measured.
 - **I2:** wvkbd's close handler left dangling surface pointers and never released a held key. Fixed in wvkbd-deskus 0.20-7.
 - **I3–I6:** menu entries call the plugin's own script; `uninstall --packages` removes only `wvkbd-deskus`; deploy keeps `.git`; Omarchy's files always come from `~/.config/omarchy`.
 - **Submission items:** the README lists the tools it uses, the sentence the scanner read as running sudo is reworded, and the merged branch is deleted from GitHub.
-- [ ] Install 0.20-7 (`tablet-mode install`) and check the on-screen keyboard still works, including holding F9.
-- [ ] `doctor` on the Z13 (the keyboard gets recorded as seen) → detach → tablet mode as before.
-- [ ] Live check of L2 with the laptop screen on: set a value live (e.g. `vrr`), rotate, see whether it survives.
+- [x] Installed 0.20-7; the on-screen keyboard works, holding F9 included (user, 2026-10-20).
+- [x] `doctor` recorded the Z13 keyboard as seen; detaching it still enters tablet mode (user, 2026-10-20).
+- [x] L2 checked live: a live 10-bit setting survived `rotate 90` and `rotate normal`. The panel was put back exactly (8-bit, VRR off, unlocked).
 - [ ] Make the repo public (the user), release v0.1.1, then submit.
 
 ## Third security review, pre-release (2026-10-19): fixed, needs hardware testing

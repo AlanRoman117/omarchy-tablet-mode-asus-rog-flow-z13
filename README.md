@@ -125,7 +125,6 @@ After editing, run `systemctl --user restart omarchy-tablet-mode`.
 ## Limitations
 
 - **Unlocking needs the keyboard.** Omarchy's lock screen (shown after suspend or idle) covers everything, including the on-screen keyboard. With the keyboard detached there's no way to type your password: reattach it to unlock, then detach again. This is deliberate. The plugin stays out of authentication: it doesn't modify or replace the lock screen, so it adds nothing to what someone holding your tablet could get past. Touch input on the lock screen belongs in Omarchy itself.
-- **Turning the screen reapplies its monitor rule** with the live mode, position and scale. Settings from your Hyprland config (bit depth, colour preset, VRR) stay; ones you changed live with `hyprctl` may go back to the config's until the next reload. `doctor` mentions it when the laptop screen runs 10-bit colour, a colour preset other than sRGB, or VRR.
 
 ## Good to know
 

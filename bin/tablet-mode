@@ -1574,14 +1574,6 @@ cmd_doctor() {
         mirror) note "The laptop screen is mirrored; auto-rotation waits until mirroring is off" ;;
         *) note "Turned sideways, the laptop screen would overlap $blocker, so rotation will be skipped. Move one of them in ~/.config/hypr/monitors.lua" ;;
       esac
-      # A rotation reapplies the panel's monitor rule with its mode, position and scale. hl.monitor
-      # merges with the config's rule, so settings from the config stay; ones set live may not.
-      local extras
-      extras=$(hypr_json monitors | jq -r --arg p "$panel" '.[] | select(.name == $p)
-        | [(if ((.currentFormat // "") | test("2101010")) then "10-bit colour" else empty end),
-           (if ((.colorManagementPreset // "srgb") | IN("srgb", "")) then empty else "the \(.colorManagementPreset) colour preset" end),
-           (if .vrr == true then "VRR" else empty end)] | join(", ")' 2>/dev/null)
-      [[ -z $extras ]] || note "The laptop screen runs with $extras. Settings from your Hyprland config survive a rotation; ones set live with hyprctl may go back to the config's until the next reload"
     elif [[ -n $panel ]]; then
       note "The laptop screen is off: desk mode (no on-screen keyboard or touch tweaks until it's back on)"
     fi
