@@ -8,7 +8,8 @@ An Omarchy 4 shell plugin (bar card) plus a CLI and user service that give detac
 
 | Path | Role |
 |---|---|
-| `manifest.json` | `alanroman117.tablet-mode`, kind `bar-widget` |
+| `manifest.json` | `alanroman117.tablet-mode`, kind `bar-widget`, listed as "Tablet Mode (ROG Flow Z13)" (the bar widget keeps the display name "Tablet Mode") |
+| `preview.png` | The marketplace card image (1280x800, Osaka Jade, tablet mode with the on-screen keyboard). Ships through `release.sh` |
 | `Widget.qml` | Bar icon + card on Omarchy's `Panel` + `KeyboardPanel` (the same pattern as alanroman117.amd-npu). IPC target `alanroman117.tablet-mode`: `open`, `close`, `toggle`, `refresh`. Watches `$XDG_RUNTIME_DIR/omarchy-tablet-mode/state.json` |
 | `bin/tablet-mode` | Everything else: setup, the daemon, event readers (`_sensor-reader`, `_usb-reader`, `_hypr-reader`), restore and doctor. Sourceable: tests source it for its functions |
 | `systemd/omarchy-tablet-mode.service` | Template; `enable` swaps `@BIN@` for the script's path. `ExecCondition=… enabled`, `ExecStopPost=… restore --quiet` |
@@ -16,7 +17,7 @@ An Omarchy 4 shell plugin (bar card) plus a CLI and user service that give detac
 | `scripts/suspend-test.sh` | Diagnostic for the suspend hang: one scenario per run (`sensor`, `detached`, `detached-sensor`, `osk`; `--rehearse` = `pm_test=devices`), with the plugin off and pm_trace on. It leaves a breadcrumb that survives a hard reset; `report` reads it after a reboot |
 | `packaging/wvkbd-deskus/` | PKGBUILD and 3-line layout patch for the US desktop on-screen keyboard (deployed with the plugin so `install` can build it) |
 | `scripts/deploy.sh` | Copies the runtime files (`manifest.json`, `Widget.qml`, `bin/`, `systemd/`, `packaging/`, `README.md`, `LICENSE`) into `~/.config/omarchy/plugins/alanroman117.tablet-mode/`, removes anything else there except a `.git` (an `omarchy plugin add` checkout needs it), refreshes an installed unit and restarts the service |
-| `scripts/release.sh` | `[--dry-run] VERSION`: builds a release commit on `main` from `develop` holding only the shipped files (deploy's list plus `docs/screenshots`), validates it, tags `vVERSION`. Never pushes |
+| `scripts/release.sh` | `[--dry-run] VERSION`: builds a release commit on `main` from `develop` holding only the shipped files (deploy's list plus `docs/screenshots` and `preview.png`), validates it, tags `vVERSION`. Never pushes |
 
 This repo (`~/Github/my-projects/omarchy-tablet-mode-asus-rog-flow-z13`) is the source of truth. Edit here, run `test/run.sh`, then `scripts/deploy.sh`. Never edit the plugin folder directly: deploy overwrites it.
 

@@ -11,8 +11,8 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-# What deploy.sh installs, plus the screenshots the README shows.
-SHIP=(manifest.json Widget.qml bin systemd packaging README.md LICENSE docs/screenshots)
+# What deploy.sh installs, plus the screenshots the README shows and the marketplace preview.
+SHIP=(manifest.json Widget.qml bin systemd packaging README.md LICENSE docs/screenshots preview.png)
 
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
