@@ -76,7 +76,8 @@ A subagent's read-only review of the release and `develop` found no Critical or 
 - [x] L2 checked live: a live 10-bit setting survived `rotate 90` and `rotate normal`. The panel was put back exactly (8-bit, VRR off, unlocked).
 - [x] v0.1.1 released and the repo made public (2026-10-20).
 - [x] v0.1.2 released (2026-10-21): marketplace preview image, listing name "Tablet Mode (ROG Flow Z13)".
-- [ ] Submit to the marketplace (the draft passed its validator; the security baseline is `review-required` with no findings).
+- [x] Submitted to the marketplace: omacom/omarchy-plugin-marketplace#12475 (2026-10-21). The bot validated v0.1.2 at `6b43380`. The security baseline is `review-required`: no findings, and the capabilities service-management, privilege and package-manager. Labels: submission, validated, security-review-required.
+- [ ] A marketplace maintainer reviews it and applies `approved-and-verified`. Watch #12475 and answer any questions there; fixes go in a new release, after which the issue is edited to re-run validation.
 
 ## Third security review, pre-release (2026-10-19): fixed and verified on the Z13, released in v0.1.0
 
