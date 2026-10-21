@@ -57,8 +57,8 @@ The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy 
 - [ ] `hyprctl reload` while rotated keeps the rotation.
 - [ ] Suspend and resume in tablet mode (see the open issue above); a reboot with the keyboard detached.
 - [x] Docked to HDMI: the external monitor is never rotated, and eDP-1 stays at `320x1080` after reattaching (checked through the 2026-10-20 rotation tests and the user's detach/attach).
-- [~] `disable --full` then `enable`: entries and bar icon removed and restored (user, 2026-10-19). Still to do: `disable` while rotated → `doctor`, and `doctor --full` after `disable --full`.
-- [ ] `kill -9` the daemon while rotated → `ExecStopPost` restores landscape.
+- [x] `disable` while rotated → landscape, and `doctor` passes every plain-Omarchy check; `enable` brings it all back (2026-10-20). `disable --full` then `enable` removed and restored the entries and bar icon (user, 2026-10-19). Not run: `doctor --full` after `disable --full` (re-enabling moves the bar icon back to its default section).
+- [x] `kill -9` the daemon while rotated → landscape again within 1.5 s, records cleared, the service restarted after 3 s (2026-10-20).
 
 ## Pre-submission review of v0.1.0 (2026-10-20): fixed, released in v0.1.1
 
@@ -66,7 +66,7 @@ A subagent's read-only review of the release and `develop` found no Critical or 
 - **M1 (functional):** on any machine that isn't a Z13, the default keyboard id read as detached, so tablet mode came on at `enable` and at every login. Now an id never present on the machine is `unknown`. The README tells non-Z13 users to set theirs before finishing setup.
 - **L1:** every touchscreen was mapped to the panel, external touch monitors included. Now only the single built-in one (`auto`), or those named in `touch_devices=`.
 - **L2:** the reviewer thought rotation might drop live-set bitdepth/cm/vrr. Measured on the Z13: it doesn't. `hl.monitor` merges with the live rule, so 10-bit set live survived two plugin rotations. Nothing to fix; a doctor note and README line added for it were taken out again.
-- **I1:** the reviewer said `KillMode=mixed` SIGKILLs leftovers before `ExecStopPost`. Measured with a transient unit: it doesn't, so the unit comment was right; it now says it was measured.
+- **I1:** the reviewer said `KillMode=mixed` SIGKILLs leftovers before `ExecStopPost`. Measured with transient units: not on a requested stop, but yes when the daemon itself dies (crash, `kill -9`). Then `restore` still un-rotates (checked on the Z13), but a key held at that instant isn't released. The unit comment says so.
 - **I2:** wvkbd's close handler left dangling surface pointers and never released a held key. Fixed in wvkbd-deskus 0.20-7.
 - **I3–I6:** menu entries call the plugin's own script; `uninstall --packages` removes only `wvkbd-deskus`; deploy keeps `.git`; Omarchy's files always come from `~/.config/omarchy`.
 - **Submission items:** the README lists the tools it uses, the sentence the scanner read as running sudo is reworded, and the merged branch is deleted from GitHub.
