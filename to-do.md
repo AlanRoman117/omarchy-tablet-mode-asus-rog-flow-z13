@@ -9,7 +9,7 @@
 - [x] Holding F9 (Voxtype) let go on the slightest finger movement, because upstream releases on any touch motion. Fixed in 0.20-2 with `hold-until-release.patch`. Installed and re-tested 2026-10-05: hold-to-dictate works even with a sliding finger.
 - Possible later: a symbols-page review, and key height (6 rows in 300 px).
 
-## Suspend hang in tablet mode (2026-10-05): open
+## Suspend hang in tablet mode (2026-10-05): mitigated and verified; root cause unknown
 
 **What happened:** with the keyboard detached and the plugin in tablet mode (accelerometer claimed, wvkbd up), `systemctl suspend` never resumed; the log ends at `PM: suspend entry (s2idle)`. It needed a hard reset. The next power-on froze at the ROG logo and needed a second hard reset, then it reset itself and booted. The same session had suspended and resumed fine 2 minutes earlier, with the keyboard attached and the plugin idle.
 
@@ -23,10 +23,10 @@
 - [x] C. `detached-sensor`: **Resumed 2026-10-05**, so the combination isn't the cause either. Left from the original hang: wvkbd on screen, the touch mapping and tweaks, or a one-off (it came 20 s after a previous resume).
 - [~] D. `plugin`: resumed once (2026-10-05), and the release before sleep and the restore after were confirmed in the journal.
 - **Caveat on A–D:** every real test suspend today woke by itself after about 3.4 s (IRQ 0/1/7, "Wakeup unrelated to ACPI SCI"). The 16:39 suspend before the hang lasted 104 s. Possible causes are the known GZ302 premature-wake regression on 7.1.8+ (CachyOS #972) or pm_trace's RTC writes. A–D prove entry and exit, not a long deep sleep.
-- [ ] E. `plugin --no-trace`: a long sleep (about a minute) x3. This is the real verdict.
+- [x] E. `plugin --no-trace`: a long sleep x3. This is the real verdict: all three resumed cleanly.
   - [x] Run 1 (2026-10-05): asleep 79.3 s, woke on the power button; released before sleep, restored after. Without pm_trace there was no early self-wake, so pm_trace was what caused the 3.4 s wakes.
   - [x] Run 2 (2026-10-05): asleep 95.5 s, released before sleep, restored to tablet mode after (keyboard still off).
-  - [ ] Run 3
+  - [x] Run 3 (2026-10-20/21): asleep 8 h 18 min overnight, keyboard detached. Released 0.7 s before suspend entry, back to tablet mode 2 s after resume, no crash.
 - [ ] Optional: `detached-osk` (plugin off, wvkbd shown, keyboard off) to prove or clear wvkbd as the cause.
 
 ## Unlocking in tablet mode: decided 2026-10-05, out of scope
@@ -55,7 +55,7 @@ The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy 
 
 - [x] Detach / attach, notifications, the keyboard appearing, all four poses, touch and pen (2026-10-05). Default mapping is correct; no calibration needed.
 - [x] `hyprctl reload` while rotated keeps the rotation: `panel back: transform 1` within 0.15 s, touch and pen re-mapped, scales and gaps unchanged (2026-10-20).
-- [ ] Suspend and resume in tablet mode (see the open issue above).
+- [x] Suspend and resume in tablet mode: three long sleeps resumed cleanly, the last overnight (see above).
 - [x] A reboot with the keyboard detached: tablet mode at login (source keyboard), the on-screen keyboard and tweaks on, `doctor` all good, no crashes. Touch does nothing at the login password prompt, as expected; a Bluetooth keyboard did (2026-10-20).
 - [x] Docked to HDMI: the external monitor is never rotated, and eDP-1 stays at `320x1080` after reattaching (checked through the 2026-10-20 rotation tests and the user's detach/attach).
 - [x] `disable` while rotated → landscape, and `doctor` passes every plain-Omarchy check; `enable` brings it all back (2026-10-20). `disable --full` then `enable` removed and restored the entries and bar icon (user, 2026-10-19). Not run: `doctor --full` after `disable --full` (re-enabling moves the bar icon back to its default section).
