@@ -55,7 +55,8 @@ The limitation is documented in the README. Posted 2026-10-05 as omacom/omarchy 
 
 - [x] Detach / attach, notifications, the keyboard appearing, all four poses, touch and pen (2026-10-05). Default mapping is correct; no calibration needed.
 - [x] `hyprctl reload` while rotated keeps the rotation: `panel back: transform 1` within 0.15 s, touch and pen re-mapped, scales and gaps unchanged (2026-10-20).
-- [ ] Suspend and resume in tablet mode (see the open issue above); a reboot with the keyboard detached.
+- [ ] Suspend and resume in tablet mode (see the open issue above).
+- [x] A reboot with the keyboard detached: tablet mode at login (source keyboard), the on-screen keyboard and tweaks on, `doctor` all good, no crashes. Touch does nothing at the login password prompt, as expected; a Bluetooth keyboard did (2026-10-20).
 - [x] Docked to HDMI: the external monitor is never rotated, and eDP-1 stays at `320x1080` after reattaching (checked through the 2026-10-20 rotation tests and the user's detach/attach).
 - [x] `disable` while rotated → landscape, and `doctor` passes every plain-Omarchy check; `enable` brings it all back (2026-10-20). `disable --full` then `enable` removed and restored the entries and bar icon (user, 2026-10-19). Not run: `doctor --full` after `disable --full` (re-enabling moves the bar icon back to its default section).
 - [x] `kill -9` the daemon while rotated → landscape again within 1.5 s, records cleared, the service restarted after 3 s (2026-10-20).

@@ -124,7 +124,7 @@ After editing, run `systemctl --user restart omarchy-tablet-mode`.
 
 ## Limitations
 
-- **Unlocking needs the keyboard.** Omarchy's lock screen (shown after suspend or idle) covers everything, including the on-screen keyboard. With the keyboard detached there's no way to type your password: reattach it to unlock, then detach again. This is deliberate. The plugin stays out of authentication: it doesn't modify or replace the lock screen, so it adds nothing to what someone holding your tablet could get past. Touch input on the lock screen belongs in Omarchy itself.
+- **Unlocking needs the keyboard.** Omarchy's lock screen (shown after suspend or idle) covers everything, including the on-screen keyboard. With the keyboard detached there's no way to type your password: reattach it to unlock, then detach again. This is deliberate. The plugin stays out of authentication: it doesn't modify or replace the lock screen, so it adds nothing to what someone holding your tablet could get past. Touch input on the lock screen belongs in Omarchy itself. The same goes for the password prompts at boot and login, which come before the plugin starts: use the detachable or a Bluetooth keyboard there.
 
 ## Good to know
 
