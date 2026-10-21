@@ -75,7 +75,8 @@ A subagent's read-only review of the release and `develop` found no Critical or 
 - [x] `doctor` recorded the Z13 keyboard as seen; detaching it still enters tablet mode (user, 2026-10-20).
 - [x] L2 checked live: a live 10-bit setting survived `rotate 90` and `rotate normal`. The panel was put back exactly (8-bit, VRR off, unlocked).
 - [x] v0.1.1 released and the repo made public (2026-10-20).
-- [ ] Release v0.1.2 (marketplace preview image, listing name "Tablet Mode (ROG Flow Z13)"), then submit to the marketplace (the draft passed its validator; the security baseline is `review-required` with no findings).
+- [x] v0.1.2 released (2026-10-21): marketplace preview image, listing name "Tablet Mode (ROG Flow Z13)".
+- [ ] Submit to the marketplace (the draft passed its validator; the security baseline is `review-required` with no findings).
 
 ## Third security review, pre-release (2026-10-19): fixed and verified on the Z13, released in v0.1.0
 
